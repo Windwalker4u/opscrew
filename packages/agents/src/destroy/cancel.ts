@@ -143,12 +143,13 @@ export function dataSnapshotOffer(
 ): string {
   const data = listText([
     ...new Set(
-      servers.flatMap((server) =>
-        serverData({
+      servers.flatMap((server) => {
+        const items = serverData({
           services: servicesOn(plan, server.server),
           storage: server.server === APP_SERVER ? plan.storage : undefined,
-        }),
-      ),
+        });
+        return items.length > 0 ? items : [`any data on server ${server.server}`];
+      }),
     ),
   ]);
   const offsite = snapshotOffsiteOf(plan);

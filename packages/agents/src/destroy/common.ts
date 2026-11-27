@@ -381,7 +381,12 @@ function cloudflareOnly(
 export async function previewCloudflareRemoval(
   session: DeletionSession,
   words: Pick<CloudflareRemovalWords, "what">,
-  extra: { servers?: readonly string[]; vars?: Readonly<Record<string, string>> } = {},
+  extra: {
+    servers?: readonly string[];
+    /** Extra cloud server modules discovered in the preview (dropped from `plan.yaml` still in state). */
+    extraModules?: (changes: readonly ResourceChange[]) => readonly string[];
+    vars?: Readonly<Record<string, string>>;
+  } = {},
 ): Promise<{ resources: ResourceChange[]; confirmed: ReadonlySet<string>; planJson: unknown }> {
   session.deps.reporter.step(
     `Planning the removal of the app's ${words.what} to see what it deletes`,
@@ -391,7 +396,8 @@ export async function previewCloudflareRemoval(
     destroy: true,
     ...(extra.vars !== undefined ? { vars: extra.vars } : {}),
   });
-  cloudflareOnly(preview.changes, "Nothing was changed.", extra.servers);
+  const allowed = [...(extra.servers ?? []), ...(extra.extraModules?.(preview.changes) ?? [])];
+  cloudflareOnly(preview.changes, "Nothing was changed.", allowed);
   return { resources: preview.changes, confirmed: preview.addresses, planJson: preview.planJson };
 }
 

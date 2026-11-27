@@ -159,7 +159,9 @@ function destroyPlanJson(
     const stateId = STATE_SERVER_IDS[change.type];
     if (stateId === undefined) return { id: `${change.name}-1` };
     const id = serverId === undefined ? stateId : serverId;
-    return { ...(id === null ? {} : { id }), name: "shop" };
+    const extra = /^module\.server_([^.]+)\./.exec(change.address)?.[1];
+    const name = extra !== undefined && extra !== "previous" ? `shop-${extra}` : "shop";
+    return { ...(id === null ? {} : { id }), name };
   };
   return {
     format_version: "1.2",

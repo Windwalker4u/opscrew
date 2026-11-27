@@ -1,4 +1,5 @@
-import { rm } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { HostFactsSchema } from "@opscrew/connector-ssh-host";
 import type { ApprovalRequest, CommandResult, RemoteExec } from "@opscrew/contracts";
 import { findExecutable, type OpsCrewError, tfstateFile } from "@opscrew/core";
@@ -124,6 +125,41 @@ describe.skipIf(!findExecutable("git"))(
       expect(w.snapshots.snapshots.map((snapshot) => snapshot.name)).toEqual([
         expect.stringMatching(/^opscrew-shop-data-before-destroy-/),
       ]);
+      expect(result.remaining.join("\n")).toContain("The snapshot of shop-data");
+      expect((await readServerAddresses(w.s.deps.paths)).servers).toBeUndefined();
+    });
+
+    it("snapshots, lifts protection on, and confirms an extra cloud server dropped from plan.yaml on an own-server app (#57)", async () => {
+      const w = await splitOwnProject();
+      const full = await readArtifact("plan", w.s.deps.paths.files.plan);
+      const { servers: _droppedServers, network: _droppedNetwork, ...rest } = full;
+      const droppedPlan = {
+        ...rest,
+        services: full.services.map(({ server: _server, ...service }) => service),
+      };
+      await writeArtifact("plan", w.s.deps.paths.files.plan, droppedPlan);
+      await writeFile(
+        join(w.s.deps.paths.root, droppedPlan.infra.dir, "variables.tf"),
+        'variable "data_delete_protection" {}\n',
+      );
+
+      const asked: string[] = [];
+      const result = await runDestroy(w.s.deps, {
+        services: w.services,
+        confirm: async (preview) => {
+          asked.push(preview.name);
+          return true;
+        },
+      });
+      expect(asked).toEqual(["shop", "shop-data"]);
+      expect(w.snapshots.snapshots.map((snapshot) => snapshot.name)).toEqual([
+        expect.stringMatching(/^opscrew-shop-data-before-destroy-/),
+      ]);
+      const titles = w.s.handler.requests.map((r) => r.title);
+      expect(titles).toContain("Lift delete protection on shop-data");
+      expect(titles).toContainEqual(
+        expect.stringContaining("DNS records on Cloudflare and the server shop-data"),
+      );
       expect(result.remaining.join("\n")).toContain("The snapshot of shop-data");
       expect((await readServerAddresses(w.s.deps.paths)).servers).toBeUndefined();
     });

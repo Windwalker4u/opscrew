@@ -61,7 +61,7 @@ import {
 } from "../shared";
 import { boundHostAdapter } from "../shared/host-plan";
 import { connectAndInspectOwnServer, inspectOwnHost } from "../shared/own-server";
-import { extraCloudProviders, extraCloudServers } from "../shared/servers";
+import { cloudServerName, extraCloudProviders, extraCloudServers } from "../shared/servers";
 import { readDeployPublicKey } from "../shared/ssh-keys";
 import {
   cancelDates,
@@ -114,10 +114,13 @@ import { deleteHomeRecords, proposeOutsideCheckRemoval, updaterTokenLeft } from 
 import { leaveSharedMonitoring } from "./monitoring";
 import {
   confirmExtraServers,
+  declaredExtraProtectedServers,
+  declaredExtraProtectionVars,
+  droppedExtraServers,
+  droppedSnapshots,
   type EarlierSnapshots,
   earlierSnapshotsLines,
   extraOwnServers,
-  extraProtectedServers,
   extraProtectionVars,
   extraServersRemaining,
   forgetExtraCloudServers,
@@ -714,6 +717,7 @@ export async function destroyOwnServer(
   let snapshots: ServerSnapshot[] = [];
   /** Their snapshots taken earlier, read once now (a provider may not answer once they are gone). */
   let earlier: EarlierSnapshots = {};
+  let effectiveWords = words;
   if (removeApp && stateHere) {
     const setup = await setupEngine(deps, plan, options);
     const dir = join(deps.paths.root, plan.infra.dir);
@@ -722,13 +726,35 @@ export async function destroyOwnServer(
       setup.engine.output(dir, { env: setup.env }).catch(() => undefined),
     );
     iac = deletionSession(scope, { ...setup, dir });
-    const preview = await previewCloudflareRemoval(iac, words, extra);
+    const preview = await previewCloudflareRemoval(iac, words, {
+      ...extra,
+      extraModules: (changes) =>
+        droppedExtraServers(plan, { changes }).map((server) => server.module),
+    });
     ({ resources, confirmed } = preview);
     snapshots = serverSnapshots(
       plan,
       { changes: resources, planJson: preview.planJson },
       options.snapshot,
     );
+    // Check credentials for any dropped extra server's provider not already checked above.
+    const dropped = droppedSnapshots(given, snapshots);
+    const checkedProviders = new Set(clouds);
+    for (const cloud of new Set(dropped.map((s) => s.provider))) {
+      if (!checkedProviders.has(cloud)) await checkProvider(deps, cloud, services);
+    }
+    if (dropped.length > 0) {
+      const allResources = [
+        ...extras.map((server) => server.resource),
+        ...dropped.map((s) => s.name ?? cloudServerName(given, s.server)),
+      ];
+      const serverPhrase = `the ${allResources.length === 1 ? "server" : "servers"} ${listText(allResources)}`;
+      const hasCloudflare = plan.dns.provider === "cloudflare" || usesTunnel(given);
+      effectiveWords = {
+        ...words,
+        what: hasCloudflare ? `${cloudflareWhat} and ${serverPhrase}` : serverPhrase,
+      };
+    }
     earlier = await readEarlierSnapshots(iac, snapshots, services);
     engineSetup = setup;
   }
@@ -854,9 +880,9 @@ export async function destroyOwnServer(
       ...(cloudflarePlan !== undefined ? { cloudflarePlan } : {}),
       ...(servers.length > 0 ? { servers } : {}),
     };
-    // The app's name, then each extra cloud server's own name.
+    // The app's name, then each extra cloud server's own name (including any dropped from plan.yaml still in state).
     await confirmDeletion(scope, confirmation, options.confirm)
-      .then(() => confirmExtraServers(scope, plan, confirmation, options.confirm))
+      .then(() => confirmExtraServers(scope, plan, confirmation, options.confirm, snapshots))
       .catch(async (error: unknown) => {
         if (bucket !== undefined) await discardBucketDeletion(bucket);
         throw error;
@@ -952,11 +978,16 @@ export async function destroyOwnServer(
         ...(services.now ? { now: services.now } : {}),
       });
     }
-    // The extra Hetzner servers' delete protection, lifted with a plan of its own first.
-    if (iac !== undefined && Object.keys(vars).length > 0) {
-      const names = extraProtectedServers(given).map((server) => server.resource);
+    // The extra Hetzner servers' delete protection, lifted with a plan of its own first (only for
+    // dropped servers whose `<name>_delete_protection` variable is still declared in variables.tf).
+    const declaredProtected =
+      iac === undefined ? [] : await declaredExtraProtectedServers(iac.dir, given, snapshots);
+    const allProtectionVars =
+      iac === undefined ? {} : await declaredExtraProtectionVars(iac.dir, given, snapshots);
+    if (iac !== undefined && Object.keys(allProtectionVars).length > 0) {
+      const names = declaredProtected.map((server) => server.resource);
       const protection = await liftProtection(iac, {
-        vars,
+        vars: allProtectionVars,
         names,
         serverInState: deletesProtectedServer(resources),
         mismatchHint: DRIFT_THEN_DESTROY,
@@ -964,12 +995,21 @@ export async function destroyOwnServer(
       protectionApproval = protection.approval;
       if (protection.off) lifted = names;
     }
+    const removalExtra = {
+      servers: [
+        ...new Set([
+          ...extra.servers,
+          ...snapshots.filter((s) => s.server !== APP_SERVER && s.inState).map((s) => s.module),
+        ]),
+      ],
+      ...(Object.keys(allProtectionVars).length > 0 ? { vars: allProtectionVars } : {}),
+    };
     if (iac !== undefined && resources.length > 0) {
       removal = await approveCloudflareRemoval(iac, {
-        ...extra,
+        ...removalExtra,
         confirmed,
         appChanges: hostSteps.length > 0,
-        words,
+        words: effectiveWords,
         // The check's pause is said in the typed confirmation it goes under (the host plan's when
         // there is one).
         notes: removeApp && hostSteps.length === 0 ? checkPauseNote(plan, uptime) : [],
@@ -1079,7 +1119,7 @@ export async function destroyOwnServer(
     });
     // The address DNS pointed at goes; the login and the confirmed host key stay (the server stays).
     // The extra servers OpsCrew deleted are forgotten.
-    await forgetExtraCloudServers(deps, plan);
+    await forgetExtraCloudServers(deps, plan, snapshots);
     const approvals = [
       ...machines.map((outcome) => outcome.approval),
       ...monitoringApprovals,
@@ -1193,11 +1233,17 @@ export async function destroyOwnServer(
     ...(shares !== undefined ? { firstApp: shares.app } : {}),
   });
   // The extra servers OpsCrew deleted: their snapshots and kept backups, by their names.
-  remaining.push(...extraServersRemaining(given, snapshotIds, earlier));
+  remaining.push(...extraServersRemaining(given, snapshotIds, earlier, snapshots));
   // The cancelled extra servers, billed until their contracts end.
   remaining.unshift(...cancelled);
   if (removeApp) {
-    for (const server of extras) await removeSnapshotRecord(deps, "destroy", server.resource);
+    const snapshotNames = new Set([
+      ...extras.map((server) => server.resource),
+      ...snapshots.flatMap((s) =>
+        s.server !== APP_SERVER && s.name !== undefined ? [s.name] : [],
+      ),
+    ]);
+    for (const resource of snapshotNames) await removeSnapshotRecord(deps, "destroy", resource);
   }
   remaining.push(...bucketStillListed(bucketDeleted), ...homeLeft);
   deps.reporter.info(["What remains:", ...remaining.map((item) => `  - ${item}`)].join("\n"));
