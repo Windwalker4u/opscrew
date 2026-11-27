@@ -48,6 +48,11 @@ function extractHostAndPath(url: string): { host: string; fullPath: string } | u
   return undefined;
 }
 
+const FLAVOR_LABEL_PATTERN: Record<ForgeFlavor, RegExp> = {
+  forgejo: /(?:^|\.)forgejo(?:\.|$)/i,
+  gitea: /(?:^|\.)gitea(?:\.|$)/i,
+};
+
 function hostMatchesFlavor(
   host: string,
   flavor: ForgeFlavor,
@@ -57,7 +62,7 @@ function hostMatchesFlavor(
   if (KNOWN_HOSTS[flavor].has(hostname)) return true;
   const configured = normalizeForgeHost(env?.[HOST_ENV[flavor]]);
   if (configured !== undefined && (host === configured || hostname === configured)) return true;
-  if (hostname.includes(flavor)) return true;
+  if (FLAVOR_LABEL_PATTERN[flavor].test(hostname)) return true;
   if (env?.OPSCREW_GIT_PLATFORM?.trim().toLowerCase() === flavor) return true;
   return false;
 }

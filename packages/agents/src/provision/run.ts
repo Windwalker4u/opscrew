@@ -18,6 +18,7 @@ import {
   checkEnvironmentKey,
   edgeMemoryMb,
   edgeProxy,
+  FORGE_REGISTRY_TOKEN_SECRET,
   homeMode,
   previewRecipeDir,
   renderBackups,
@@ -1797,8 +1798,18 @@ async function provisionFlow(
         ...(serverReach.length > 0 ? { servers: serverReach } : {}),
       });
       if (gitPlatform !== undefined) {
+        const forgeRegistryToken =
+          plan.cicd.provider === "forgejo-actions" || plan.cicd.provider === "gitea-actions"
+            ? deps.env[FORGE_REGISTRY_TOKEN_SECRET]?.trim()
+            : undefined;
+        if (forgeRegistryToken) {
+          deps.redactor.addLiteral(forgeRegistryToken, FORGE_REGISTRY_TOKEN_SECRET);
+        }
         await setPlatformDeploySecrets(deps, gitPlatform, plan, {
-          secrets: secretValues,
+          secrets: {
+            ...secretValues,
+            ...(forgeRegistryToken ? { [FORGE_REGISTRY_TOKEN_SECRET]: forgeRegistryToken } : {}),
+          },
           variableNames: environment.names,
           environment: platformEnvironmentName(plan),
           branch: plan.cicd.branch,

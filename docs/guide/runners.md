@@ -345,29 +345,12 @@ Self-hosted runners need Administration (Read and write) on your GitHub token, f
 and removal tokens, the runner list and the fork pull request policy. See
 [The GitHub token](security.md#the-github-token).
 
-## GitLab Runner
+## GitLab, Forgejo, and Gitea runners
 
-For projects hosted on [GitLab](gitlab.md) (`gitlab.com` or self-managed), OpsCrew supports
-self-hosted GitLab Runners with the same safety model:
-
-- OpsCrew creates a locked, tagged project runner via GitLab's `POST /user/runners` API (requiring
-  `create_runner` scope on `GITLAB_TOKEN`), receiving a `glrt-` runner authentication token.
-- The pinned `gitlab-runner` binary is verified by SHA-256 and registered non-interactively with the
-  `shell` executor under `/srv/runners/<app>`, with the `glrt-` token delivered only on standard
-  input (never written to any plan, log, or repository file).
-- The runner runs as the `deploy` user's systemd user service (`opscrew-runner-<app>.service`) with
-  `sg docker` and `KillMode=control-group`, taking only jobs tagged `opscrew-<app>-<env>`.
-
-## Forgejo Runner and Gitea `act_runner`
-
-For projects hosted on [Forgejo](forgejo.md) or [Gitea](gitea.md), OpsCrew supports self-hosted
-`forgejo-runner` and `act_runner` daemons with the same security model:
-
-- OpsCrew fetches a repository registration token (`GET .../actions/runners/registration-token` on
-  Forgejo; `POST .../actions/runners/registration-token` on Gitea) only at apply time and passes it
-  exclusively on standard input (never in a plan, log, CLI argument, or repository file).
-- The pinned static binary is verified by SHA-256 and registered non-interactively under
-  `/srv/runners/<app>` with the single host label `opscrew-<app>-<env>:host`.
-- The daemon runs as the `deploy` user's systemd user service (`opscrew-runner-<app>.service`) with
-  `sg docker` and `KillMode=control-group`. Deploy workflows target `runs-on: opscrew-<app>-<env>`
-  directly so jobs never collide with shared docker-mode runners.
+- **GitLab:** OpsCrew's GitLab connector creates locked, tagged project runners (`POST /user/runners`)
+  and renders `.gitlab-ci.yml` pipelines; automated `gitlab-runner` host-plan installation on servers
+  is planned in a follow-up.
+- **Forgejo & Gitea:** OpsCrew's Forgejo/Gitea connector reads repository runner registration tokens
+  (`GET .../actions/runners/registration-token` on Forgejo; `POST` on Gitea) and renders workflows
+  that target `runs-on: opscrew-<app>-<env>` for `environment.runner: server`; automated
+  `forgejo-runner` / `act_runner` host-plan installation on servers is planned in a follow-up.

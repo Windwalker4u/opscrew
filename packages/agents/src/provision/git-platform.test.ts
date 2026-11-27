@@ -312,4 +312,150 @@ describe("git-platform agents integration (GitLab)", () => {
       ).toBe(true);
     },
   );
+
+  it.skipIf(!findExecutable("git"))(
+    "runs runProvision end-to-end for a Forgejo Actions plan with approvals, secrets (including OPSCREW_REGISTRY_TOKEN), and pull request",
+    async () => {
+      const token = fakeSecret("forgejo-token", "provision-forgejo");
+      const registryToken = fakeSecret("forgejo-token", "provision-forgejo-registry");
+      const hcloud = fakeSecret("hcloud-token", "provision-forgejo");
+      const stripe = fakeSecret("stripe-live-key", "provision-forgejo");
+      const plan = DeployPlanSchema.parse({
+        ...testPlan(),
+        dns: { provider: "none", proxied: false },
+        cicd: {
+          provider: "forgejo-actions",
+          registry: "forgejo-registry",
+          branch: "main",
+          workflowPath: undefined,
+        },
+      });
+      const project = await createProject(plan);
+      await writeFile(join(project.root, "production.env"), `STRIPE_SECRET_KEY=${stripe}\n`);
+      execFileSync("git", [
+        "-C",
+        project.root,
+        "remote",
+        "set-url",
+        "origin",
+        "https://codeberg.org/alice/shop.git",
+      ]);
+      execFileSync("git", [
+        "-C",
+        project.root,
+        "remote",
+        "set-url",
+        "--push",
+        "origin",
+        project.bare,
+      ]);
+
+      const storedSecrets = new Map<string, string>();
+      const { fetch, calls } = fakeFetch(
+        {
+          "GET /repos/alice/shop": {
+            body: {
+              id: 77,
+              full_name: "alice/shop",
+              default_branch: "main",
+              private: true,
+              html_url: "https://codeberg.org/alice/shop",
+            },
+          },
+          "GET /repos/alice/shop/pulls": { body: [] },
+          "POST /repos/alice/shop/pulls": {
+            status: 201,
+            body: {
+              number: 9,
+              html_url: "https://codeberg.org/alice/shop/pulls/9",
+              title: "Add OpsCrew deployment setup for shop",
+              head: { ref: DEPLOY_SETUP_BRANCH },
+              base: { ref: "main" },
+            },
+          },
+        },
+        { base: "https://codeberg.org/api/v1" },
+      );
+
+      const forgejoFetch: typeof fetch = async (input, init) => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (method === "GET" && /\/repos\/alice\/shop\/actions\/secrets\?/.test(url)) {
+          return new Response(JSON.stringify([...storedSecrets.keys()].map((name) => ({ name }))), {
+            status: 200,
+          });
+        }
+        const putMatch = /\/repos\/alice\/shop\/actions\/secrets\/([^/?]+)/.exec(url);
+        if (method === "PUT" && putMatch) {
+          const name = decodeURIComponent(putMatch[1] as string);
+          const payload = JSON.parse(String(init?.body ?? "{}")) as { data: string };
+          storedSecrets.set(name, payload.data);
+          return new Response(null, { status: 204 });
+        }
+        return fetch(input, init);
+      };
+
+      const engine = new FakeEngine();
+      const handler = new ScriptedApprovalHandler(() => true);
+      const zone = new FakeZone();
+      const deps = await createTestPhaseDeps({
+        root: project.root,
+        env: {
+          ...process.env,
+          OPSCREW_HOME: join(project.root, ".home-opscrew"),
+          HCLOUD_TOKEN: hcloud,
+          FORGEJO_TOKEN: token,
+          OPSCREW_REGISTRY_TOKEN: registryToken,
+          OPSCREW_APP_ENV_FILE: "production.env",
+        },
+        runner: projectRunner(),
+        approvalHandler: handler,
+        fetch: forgejoFetch,
+      });
+
+      const result = await runProvision(deps, {
+        services: {
+          otherApps: { inspect: noOtherApps },
+          engine: async () => engine,
+          provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
+          tcpConnect: async () => true,
+          remote: readyRemote,
+          sleep: async () => undefined,
+          sharedCloudflare: fakeSharedCloudflare(zone),
+        },
+      });
+
+      expect(handler.requests.map((r) => r.kind)).toEqual([
+        "repo-write",
+        "iac-apply",
+        "github-secrets",
+        "git-push",
+        "pull-request",
+      ]);
+      expect(result).toMatchObject({
+        applied: true,
+        branch: DEPLOY_SETUP_BRANCH,
+        pushed: true,
+        prUrl: "https://codeberg.org/alice/shop/pulls/9",
+      });
+
+      const workflow = await readFile(
+        join(project.root, ".forgejo/workflows/opscrew-deploy.yml"),
+        "utf8",
+      );
+      expect(workflow).toContain("registry: codeberg.org");
+      expect(workflow).toContain(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting Forgejo Actions expression syntax.
+        "REGISTRY_TOKEN: ${{ secrets.OPSCREW_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}",
+      );
+      expect(storedSecrets.has("OPSCREW_HOST")).toBe(true);
+      expect(storedSecrets.has("OPSCREW_SSH_PRIVATE_KEY")).toBe(true);
+      expect(storedSecrets.has("OPSCREW_SSH_KNOWN_HOSTS")).toBe(true);
+      expect(storedSecrets.has("OPSCREW_APP_ENV")).toBe(true);
+      expect(storedSecrets.get("OPSCREW_REGISTRY_TOKEN")).toBe(registryToken);
+      expect(calls.some((c) => c.method === "POST" && c.path === "/repos/alice/shop/pulls")).toBe(
+        true,
+      );
+    },
+  );
 });

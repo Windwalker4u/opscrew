@@ -1,4 +1,5 @@
 import type { FetchLike } from "@opscrew/contracts";
+import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import {
@@ -80,6 +81,12 @@ describe("parseForgejoRemote & parseGiteaRemote", () => {
     ).toBe("bob/web");
     expect(parseForgejoRemote("https://github.com/octo/repo.git")).toBeUndefined();
     expect(parseGiteaRemote("https://gitlab.com/group/repo.git")).toBeUndefined();
+    // Substring-only matches must not match; detection requires a DNS label boundary.
+    expect(parseForgejoRemote("https://myforgejohost.example.com/team/app.git")).toBeUndefined();
+    expect(parseGiteaRemote("https://notgitea.example.com/team/app.git")).toBeUndefined();
+    expect(parseGiteaRemote("https://code.gitea.internal/team/app.git")?.host).toBe(
+      "code.gitea.internal",
+    );
   });
 
   it("formats container image names for default and custom registry hosts", () => {
@@ -278,5 +285,60 @@ describe("ForgejoGiteaClient protocol behavior (Forgejo vs Gitea)", () => {
     expect(runners).toEqual([
       { id: 5, name: "srv-1", online: true, busy: false, labels: ["opscrew-app-prod"] },
     ]);
+  });
+
+  it("refuses calls whose remote.host differs from the client's configured host without sending requests", async () => {
+    const { fetch, requests } = makeFakeFetch(() => ({ status: 200, body: {} }));
+    const client = forgejoDefinition.createConnector({
+      token: forgejoToken,
+      host: "codeberg.org",
+      fetch,
+    }).client;
+    if (!client) throw new Error("expected Forgejo client");
+
+    const otherRemote = parseForgejoRemote("https://forgejo.example.internal/team/app.git");
+    if (!otherRemote) throw new Error("expected self-hosted Forgejo remote");
+
+    await expect(client.getRepo(otherRemote)).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+    } satisfies Partial<OpsCrewError>);
+    await expect(client.setSecret(otherRemote, "OPSCREW_HOST", "1.2.3.4")).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+    } satisfies Partial<OpsCrewError>);
+    expect(requests).toEqual([]);
+  });
+
+  it("wraps unexpected API payloads as redacted OpsCrewError PROVIDER_ERROR instead of ZodError", async () => {
+    const { fetch } = makeFakeFetch((req) => {
+      if (req.url.endsWith("/api/v1/user")) {
+        return { status: 200, body: { unexpected: true } };
+      }
+      if (req.url.endsWith("/repos/alice/demo")) {
+        return { status: 200, body: { id: "not-a-number" } };
+      }
+      return { status: 404 };
+    });
+    const client = forgejoDefinition.createConnector({
+      token: forgejoToken,
+      host: "codeberg.org",
+      fetch,
+    }).client;
+    if (!client) throw new Error("expected Forgejo client");
+
+    await expect(client.whoAmI()).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof OpsCrewError &&
+        err.code === "PROVIDER_ERROR" &&
+        err.message.includes("unexpected user response"),
+    );
+
+    const remote = parseForgejoRemote("https://codeberg.org/alice/demo.git");
+    if (!remote) throw new Error("expected Forgejo remote");
+    await expect(client.getRepo(remote)).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof OpsCrewError &&
+        err.code === "PROVIDER_ERROR" &&
+        err.message.includes("unexpected repository response"),
+    );
   });
 });

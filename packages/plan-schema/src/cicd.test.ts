@@ -42,6 +42,18 @@ describe("CI/CD provider and registry validation (042)", () => {
     );
     expect(gl.cicd.registry).toBe("gitlab-registry");
     expect(gl.cicd.workflowPath).toBe(".gitlab-ci.yml");
+
+    const fj = DeployPlanSchema.parse(
+      basePlan({ cicd: { provider: "forgejo-actions", branch: "main" } }),
+    );
+    expect(fj.cicd.registry).toBe("forgejo-registry");
+    expect(fj.cicd.workflowPath).toBe(".forgejo/workflows/opscrew-deploy.yml");
+
+    const gt = DeployPlanSchema.parse(
+      basePlan({ cicd: { provider: "gitea-actions", branch: "main" } }),
+    );
+    expect(gt.cicd.registry).toBe("gitea-registry");
+    expect(gt.cicd.workflowPath).toBe(".gitea/workflows/opscrew-deploy.yml");
   });
 
   it("refuses mismatched cicd.provider and cicd.registry pairs", () => {
@@ -51,6 +63,24 @@ describe("CI/CD provider and registry validation (042)", () => {
     expect(badGitLab.success).toBe(false);
     expect(badGitLab.error?.issues[0]?.message).toContain(
       'must be "gitlab-registry" when cicd.provider is "gitlab-ci"',
+    );
+
+    const badForgejo = DeployPlanSchema.safeParse(
+      basePlan({ cicd: { provider: "forgejo-actions", registry: "ghcr", branch: "main" } }),
+    );
+    expect(badForgejo.success).toBe(false);
+    expect(badForgejo.error?.issues[0]?.message).toContain(
+      'must be "forgejo-registry" when cicd.provider is "forgejo-actions"',
+    );
+
+    const badGitea = DeployPlanSchema.safeParse(
+      basePlan({
+        cicd: { provider: "gitea-actions", registry: "forgejo-registry", branch: "main" },
+      }),
+    );
+    expect(badGitea.success).toBe(false);
+    expect(badGitea.error?.issues[0]?.message).toContain(
+      'must be "gitea-registry" when cicd.provider is "gitea-actions"',
     );
 
     const badGitHub = DeployPlanSchema.safeParse(
@@ -64,7 +94,7 @@ describe("CI/CD provider and registry validation (042)", () => {
     );
   });
 
-  it("refuses non-VPS targets with gitlab-ci", () => {
+  it("refuses non-VPS targets with gitlab-ci, forgejo-actions, and gitea-actions", () => {
     const cases: Array<Record<string, unknown>> = [
       {
         target: {
@@ -117,22 +147,29 @@ describe("CI/CD provider and registry validation (042)", () => {
         },
       },
     ];
+    const providers = [
+      { provider: "gitlab-ci", registry: "gitlab-registry" },
+      { provider: "forgejo-actions", registry: "forgejo-registry" },
+      { provider: "gitea-actions", registry: "gitea-registry" },
+    ] as const;
     for (const overrides of cases) {
-      // Valid under github-actions, refused specifically by checkCicd under gitlab-ci.
+      // Valid under github-actions, refused specifically by checkCicd under non-GitHub providers.
       const gh = DeployPlanSchema.safeParse(basePlan(overrides));
       expect(gh.success, JSON.stringify(gh.error?.issues)).toBe(true);
-      const parsed = DeployPlanSchema.safeParse(
-        basePlan({
-          ...overrides,
-          cicd: { provider: "gitlab-ci", registry: "gitlab-registry", branch: "main" },
-        }),
-      );
-      expect(parsed.success).toBe(false);
-      expect(
-        parsed.error?.issues.some((i) =>
-          i.message.includes("supported only for cloud server and own-server targets"),
-        ),
-      ).toBe(true);
+      for (const { provider, registry } of providers) {
+        const parsed = DeployPlanSchema.safeParse(
+          basePlan({
+            ...overrides,
+            cicd: { provider, registry, branch: "main" },
+          }),
+        );
+        expect(parsed.success).toBe(false);
+        expect(
+          parsed.error?.issues.some((i) =>
+            i.message.includes("supported only for cloud server and own-server targets"),
+          ),
+        ).toBe(true);
+      }
     }
   });
 });

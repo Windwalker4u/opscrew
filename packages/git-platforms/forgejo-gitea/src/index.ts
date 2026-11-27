@@ -111,6 +111,7 @@ export const forgejoDefinition: GitPlatformDefinition = {
   contractVersion: GIT_PLATFORM_CONTRACT_VERSION,
   id: "forgejo",
   displayName: "Forgejo",
+  defaultHost: "codeberg.org",
   cicdProvider: "forgejo-actions",
   registryId: "forgejo-registry",
   credentials: {
@@ -138,6 +139,7 @@ export const giteaDefinition: GitPlatformDefinition = {
   contractVersion: GIT_PLATFORM_CONTRACT_VERSION,
   id: "gitea",
   displayName: "Gitea",
+  defaultHost: "gitea.com",
   cicdProvider: "gitea-actions",
   registryId: "gitea-registry",
   credentials: {

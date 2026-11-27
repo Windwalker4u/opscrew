@@ -22,7 +22,7 @@ secret is written to your repository, logs, or audit trail.
 `opscrew init` recognises Forgejo automatically when `origin` points to:
 
 - `codeberg.org` or `code.forgejo.org`;
-- any hostname containing `forgejo` (for example `forgejo.company.internal`);
+- any hostname with a `forgejo` DNS label (for example `forgejo.company.internal`);
 - any custom hostname configured in `FORGEJO_HOST` (or when `OPSCREW_GIT_PLATFORM=forgejo`).
 
 ```bash
@@ -38,9 +38,11 @@ npx opscrew init
   `.forgejo/workflows/opscrew-deploy-<env>.yml` for additional environments), based on OpsCrew's
   GitHub Actions workflow template.
 - **Registry:** images are pushed to your Forgejo instance's built-in OCI container registry
-  (`<host>/<owner>/<repo>`, or `cicd.registryHost` when overridden). Workflows authenticate with
-  `${{ secrets.OPSCREW_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}`; if your instance's job token
-  cannot write packages, store a `write:package` token in `OPSCREW_REGISTRY_TOKEN`.
+  (`<host>/<owner>/<repo>`, or `cicd.registryHost` when overridden). Both build and server-side
+  deploy logins authenticate with `${{ secrets.OPSCREW_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}`
+  (prefixed per environment outside `prod`); if your instance's job token cannot access private
+  packages, export `OPSCREW_REGISTRY_TOKEN` when running `opscrew provision` so it is stored
+  alongside the other deploy secrets after approval.
 - **Secrets:** Forgejo does not have deployment environments, so OpsCrew stores deploy secrets at
   repository scope with per-environment prefixes (`OPSCREW_*` for prod, `OPSCREW_STAGING_*` for
   staging).
@@ -52,8 +54,8 @@ npx opscrew init
 
 ## Live verification checklist
 
-Unit tests verify Forgejo's REST v1 API, OCI v2 digest lookup, workflow rendering, and
-`forgejo-runner` unit generation against fake endpoints. Before relying on a new Forgejo instance:
+Unit tests verify Forgejo's REST v1 API, workflow rendering, and approval-gated provisioning
+against fake endpoints. Before relying on a new Forgejo instance:
 
 1. Run `npx opscrew init` with `FORGEJO_TOKEN` and confirm it signs in against `/api/v1/user`.
 2. Verify `Settings -> Actions -> Secrets` and `Variables` are enabled on the repository.

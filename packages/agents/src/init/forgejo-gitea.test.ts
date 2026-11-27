@@ -38,7 +38,7 @@ describe("opscrew init Forgejo and Gitea detection (043)", () => {
       status: "pass",
       message: "origin is codeberg.org/alice/shop.",
     });
-    expect(checks.find((c) => c.id === "forgejo")).toMatchObject({
+    expect(checks.find((c) => c.id === "git-platform:forgejo")).toMatchObject({
       status: "pass",
       message: "Forgejo token works on codeberg.org (signed in as alice).",
     });
@@ -58,7 +58,7 @@ describe("opscrew init Forgejo and Gitea detection (043)", () => {
       status: "pass",
       message: "origin is git.example.internal/team/api.",
     });
-    expect(checks.find((c) => c.id === "gitea")).toMatchObject({
+    expect(checks.find((c) => c.id === "git-platform:gitea")).toMatchObject({
       status: "fail",
       message: expect.stringContaining("No Gitea token found"),
       fix: expect.stringContaining("GITEA_TOKEN"),

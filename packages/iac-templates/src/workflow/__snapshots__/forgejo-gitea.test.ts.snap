@@ -19,6 +19,7 @@ on:
       - "opscrew/runtime/compose.yaml"
       - "opscrew/runtime/edge/**"
       - ".forgejo/workflows/opscrew-deploy.yml"
+      - "opscrew/secrets.sops.json"
   workflow_dispatch:
     inputs:
       digest:
@@ -243,7 +244,7 @@ jobs:
           {
             echo "image=$image"
             echo "tag=$name:$TAG"
-            echo "identity=https://github.com/$GITHUB_REPOSITORY/$workflow@refs/heads/$branch"
+            echo "identity=https://codeberg.org/$GITHUB_REPOSITORY/$workflow@refs/heads/$branch"
           } >> "$GITHUB_OUTPUT"
           echo "Deploying \\\`$image\\\`, built by run $run_id from \\\`$commit\\\` on \\\`$branch\\\`." >> "$GITHUB_STEP_SUMMARY"
 
@@ -1112,7 +1113,7 @@ jobs:
           IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
           TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
           MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
-          REGISTRY_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_TOKEN: \${{ secrets.OPSCREW_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if [[ ! "$IMAGE" =~ ^codeberg\\.org/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
@@ -1834,6 +1835,7 @@ on:
       - "opscrew/runtime/compose.yaml"
       - "opscrew/runtime/edge/**"
       - ".gitea/workflows/opscrew-deploy.yml"
+      - "opscrew/secrets.sops.json"
   workflow_dispatch:
     inputs:
       digest:
@@ -2058,7 +2060,7 @@ jobs:
           {
             echo "image=$image"
             echo "tag=$name:$TAG"
-            echo "identity=https://github.com/$GITHUB_REPOSITORY/$workflow@refs/heads/$branch"
+            echo "identity=https://gitea.example.internal/$GITHUB_REPOSITORY/$workflow@refs/heads/$branch"
           } >> "$GITHUB_OUTPUT"
           echo "Deploying \\\`$image\\\`, built by run $run_id from \\\`$commit\\\` on \\\`$branch\\\`." >> "$GITHUB_STEP_SUMMARY"
 
@@ -2920,7 +2922,7 @@ jobs:
           IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
           TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
           MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
-          REGISTRY_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_TOKEN: \${{ secrets.OPSCREW_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if [[ ! "$IMAGE" =~ ^gitea\\.example\\.internal/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then

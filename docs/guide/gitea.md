@@ -20,7 +20,7 @@ self-hosted Gitea instances — through the same plan-and-approval safety model 
 `opscrew init` recognises Gitea automatically when `origin` points to:
 
 - `gitea.com`;
-- any hostname containing `gitea` (for example `gitea.company.internal`);
+- any hostname with a `gitea` DNS label (for example `gitea.company.internal`);
 - any custom hostname configured in `GITEA_HOST` (or when `OPSCREW_GIT_PLATFORM=gitea`).
 
 ```bash
@@ -36,8 +36,10 @@ npx opscrew init
   `.gitea/workflows/opscrew-deploy-<env>.yml` for additional environments), based on OpsCrew's
   GitHub Actions workflow template.
 - **Registry:** images are pushed to your Gitea instance's built-in OCI container registry
-  (`<host>/<owner>/<repo>`, or `cicd.registryHost` when overridden). Workflows authenticate with
-  `${{ secrets.OPSCREW_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}`.
+  (`<host>/<owner>/<repo>`, or `cicd.registryHost` when overridden). Both build and server-side
+  deploy logins authenticate with `${{ secrets.OPSCREW_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}`
+  (prefixed per environment outside `prod`); export `OPSCREW_REGISTRY_TOKEN` when running
+  `opscrew provision` if private registry access needs a package token.
 - **Secrets:** Gitea does not have deployment environments, so OpsCrew stores deploy secrets at
   repository scope with per-environment prefixes (`OPSCREW_*` for prod, `OPSCREW_STAGING_*` for
   staging).
@@ -49,8 +51,8 @@ npx opscrew init
 ## Live verification checklist
 
 Unit tests verify Gitea's REST v1 API (including `POST /actions/runners/registration-token` and
-`workflow_dispatch`), OCI v2 digest lookup, workflow rendering, and `act_runner` unit generation
-against fake endpoints. Before relying on a new Gitea instance:
+`workflow_dispatch`), workflow rendering, and approval-gated provisioning against fake endpoints.
+Before relying on a new Gitea instance:
 
 1. Run `npx opscrew init` with `GITEA_TOKEN` and confirm it signs in against `/api/v1/user`.
 2. Verify Actions Secrets and Variables are enabled on the repository.

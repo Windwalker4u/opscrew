@@ -13,7 +13,7 @@ import type {
 } from "@opscrew/contracts";
 import { OpsCrewError, Redactor } from "@opscrew/core";
 import { z } from "zod";
-import type { ForgeFlavor } from "./remote";
+import { type ForgeFlavor, normalizeForgeHost } from "./remote";
 
 export interface ForgejoGiteaClientOptions {
   flavor: ForgeFlavor;
@@ -134,13 +134,57 @@ export class ForgejoGiteaClient implements GitPlatformClient {
   constructor(options: ForgejoGiteaClientOptions) {
     this.flavor = options.flavor;
     this.displayName = options.flavor === "forgejo" ? "Forgejo" : "Gitea";
-    this.host = options.host.replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+    this.host =
+      normalizeForgeHost(options.host) ??
+      options.host
+        .trim()
+        .replace(/^https?:\/\//i, "")
+        .replace(/\/.*$/, "")
+        .toLowerCase();
     this.apiBase = `https://${this.host}/api/v1`;
     this.token = options.token;
     this.fetch = options.fetch;
     this.redactor = options.redactor ?? new Redactor();
     this.redactor.addLiteral(options.token, `${options.flavor}-token`);
     this.userAgent = `opscrew/${options.version ?? "0.0.0"}`;
+  }
+
+  /**
+   * Ensures a caller never sends a token configured for one Forgejo/Gitea host to a remote on
+   * another host.
+   */
+  private assertHost(remote: GitPlatformRemote): void {
+    const remoteHost = normalizeForgeHost(remote.host);
+    if (remoteHost !== this.host) {
+      const hostEnv = this.flavor === "forgejo" ? "FORGEJO_HOST" : "GITEA_HOST";
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `${this.displayName} client is configured for ${this.host}, not ${remote.host}.`,
+        {
+          hint: `Set ${hostEnv}=${remote.host} (or cicd.host in opscrew/plan.yaml) so OpsCrew uses a token scoped to ${remote.host}.`,
+        },
+      );
+    }
+  }
+
+  /** Parses an API payload with `schema.safeParse`, throwing a redacted `PROVIDER_ERROR` on failure. */
+  private parsePayload<T>(schema: z.ZodType<T>, data: unknown, what: string): T {
+    const result = schema.safeParse(data);
+    if (result.success) return result.data;
+    const summary = result.error.issues
+      .map((issue) => {
+        const path = issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+        return `${path}${issue.message}`;
+      })
+      .join("; ");
+    const safeSummary = this.redactor.redact(summary || "invalid response shape");
+    throw new OpsCrewError(
+      "PROVIDER_ERROR",
+      `${this.displayName} returned an unexpected ${what} response: ${safeSummary}`,
+      {
+        hint: `Check that https://${this.host} is a supported ${this.displayName} instance and try again.`,
+      },
+    );
   }
 
   private async request(
@@ -205,12 +249,13 @@ export class ForgejoGiteaClient implements GitPlatformClient {
 
   async whoAmI(): Promise<string> {
     const { data } = await this.request("GET", "/user");
-    return UserSchema.parse(data).login;
+    return this.parsePayload(UserSchema, data, "user").login;
   }
 
   async getRepo(remote: GitPlatformRemote): Promise<GitPlatformRepoInfo> {
+    this.assertHost(remote);
     const { data } = await this.request("GET", repoBase(remote));
-    const parsed = RepoSchema.parse(data);
+    const parsed = this.parsePayload(RepoSchema, data, "repository");
     return {
       id: parsed.id,
       fullPath: parsed.full_name,
@@ -226,12 +271,13 @@ export class ForgejoGiteaClient implements GitPlatformClient {
     head: string,
     base?: string,
   ): Promise<GitPlatformChangeRequest | undefined> {
+    this.assertHost(remote);
     const params = new URLSearchParams({ state: "open", limit: "50" });
     if (base) {
       params.set(this.flavor === "forgejo" ? "base" : "base_branch", base);
     }
     const { data } = await this.request("GET", `${repoBase(remote)}/pulls?${params.toString()}`);
-    const list = z.array(PullSchema).parse(data);
+    const list = this.parsePayload(z.array(PullSchema), data, "pull request list");
     const match = list.find((pr) => {
       const headRef = pr.head?.ref ?? pr.head?.label;
       const headOk = headRef === head || headRef === `${remote.owner}:${head}`;
@@ -252,13 +298,14 @@ export class ForgejoGiteaClient implements GitPlatformClient {
     remote: GitPlatformRemote,
     input: { title: string; body: string; head: string; base: string },
   ): Promise<GitPlatformChangeRequest> {
+    this.assertHost(remote);
     const { data } = await this.request("POST", `${repoBase(remote)}/pulls`, {
       title: input.title,
       body: input.body,
       head: input.head,
       base: input.base,
     });
-    const pr = PullSchema.parse(data);
+    const pr = this.parsePayload(PullSchema, data, "pull request");
     return {
       number: pr.number,
       url: pr.html_url,
@@ -273,11 +320,12 @@ export class ForgejoGiteaClient implements GitPlatformClient {
     number: number,
     input: { title: string; body: string },
   ): Promise<GitPlatformChangeRequest> {
+    this.assertHost(remote);
     const { data } = await this.request("PATCH", `${repoBase(remote)}/pulls/${number}`, {
       title: input.title,
       body: input.body,
     });
-    const pr = PullSchema.parse(data);
+    const pr = this.parsePayload(PullSchema, data, "pull request");
     return {
       number: pr.number,
       url: pr.html_url,
@@ -288,8 +336,9 @@ export class ForgejoGiteaClient implements GitPlatformClient {
   }
 
   async environmentCapability(
-    _remote: GitPlatformRemote,
+    remote: GitPlatformRemote,
   ): Promise<GitPlatformEnvironmentCapability> {
+    this.assertHost(remote);
     return {
       available: false,
       protectedAvailable: false,
@@ -297,11 +346,13 @@ export class ForgejoGiteaClient implements GitPlatformClient {
     };
   }
 
-  async ensureEnvironment(_remote: GitPlatformRemote, _name: string): Promise<void> {
+  async ensureEnvironment(remote: GitPlatformRemote, _name: string): Promise<void> {
+    this.assertHost(remote);
     // No-op: neither Forgejo nor Gitea has a deployment environments API.
   }
 
-  async deleteEnvironment(_remote: GitPlatformRemote, _name: string): Promise<void> {
+  async deleteEnvironment(remote: GitPlatformRemote, _name: string): Promise<void> {
+    this.assertHost(remote);
     // No-op: neither Forgejo nor Gitea has a deployment environments API.
   }
 
@@ -311,6 +362,7 @@ export class ForgejoGiteaClient implements GitPlatformClient {
     value: string,
     _options?: GitPlatformSecretOptions,
   ): Promise<void> {
+    this.assertHost(remote);
     this.redactor.addLiteral(value, `secret:${name}`);
     await this.request("PUT", `${repoBase(remote)}/actions/secrets/${encodeURIComponent(name)}`, {
       data: value,
@@ -322,6 +374,7 @@ export class ForgejoGiteaClient implements GitPlatformClient {
     name: string,
     _options?: Pick<GitPlatformSecretOptions, "environment">,
   ): Promise<boolean> {
+    this.assertHost(remote);
     const target = name.toUpperCase();
     for (let page = 1; page <= 10; page++) {
       const { status, data } = await this.request(
@@ -331,7 +384,7 @@ export class ForgejoGiteaClient implements GitPlatformClient {
         [404],
       );
       if (status === 404) return false;
-      const list = z.array(SecretItemSchema).parse(data);
+      const list = this.parsePayload(z.array(SecretItemSchema), data, "secrets list");
       if (list.some((item) => item.name.toUpperCase() === target)) return true;
       if (list.length < 50) return false;
     }
@@ -343,6 +396,7 @@ export class ForgejoGiteaClient implements GitPlatformClient {
     name: string,
     _options?: Pick<GitPlatformSecretOptions, "environment">,
   ): Promise<void> {
+    this.assertHost(remote);
     await this.request(
       "DELETE",
       `${repoBase(remote)}/actions/secrets/${encodeURIComponent(name)}`,
@@ -373,6 +427,7 @@ export class ForgejoGiteaClient implements GitPlatformClient {
     remote: GitPlatformRemote,
     input: { ref: string; workflowFile?: string; inputs?: Record<string, string> },
   ): Promise<GitPlatformPipelineRun | undefined> {
+    this.assertHost(remote);
     if (!input.workflowFile?.trim()) {
       throw new OpsCrewError(
         "INVALID_INPUT",
@@ -416,6 +471,7 @@ export class ForgejoGiteaClient implements GitPlatformClient {
     remote: GitPlatformRemote,
     options?: { ref?: string; workflowFile?: string; limit?: number },
   ): Promise<GitPlatformPipelineRun[]> {
+    this.assertHost(remote);
     const params = new URLSearchParams();
     if (options?.limit) params.set("limit", String(options.limit));
     if (options?.ref) {
@@ -437,9 +493,10 @@ export class ForgejoGiteaClient implements GitPlatformClient {
         "GET",
         `${repoBase(remote)}/actions/tasks${options?.limit ? `?limit=${options.limit}` : ""}`,
       );
-      rawRuns = RunsListSchema.parse(fallback.data).workflow_runs ?? [];
+      rawRuns =
+        this.parsePayload(RunsListSchema, fallback.data, "workflow runs").workflow_runs ?? [];
     } else {
-      rawRuns = RunsListSchema.parse(data).workflow_runs ?? [];
+      rawRuns = this.parsePayload(RunsListSchema, data, "workflow runs").workflow_runs ?? [];
     }
     const wantedWorkflow = options?.workflowFile
       ? workflowFileName(options.workflowFile)
@@ -461,17 +518,20 @@ export class ForgejoGiteaClient implements GitPlatformClient {
   }
 
   async getPipelineRun(remote: GitPlatformRemote, runId: number): Promise<GitPlatformPipelineRun> {
+    this.assertHost(remote);
     const { data } = await this.request("GET", `${repoBase(remote)}/actions/runs/${runId}`);
-    return this.mapRun(remote, RunItemSchema.parse(data));
+    return this.mapRun(remote, this.parsePayload(RunItemSchema, data, "workflow run"));
   }
 
   async retryPipelineRun(remote: GitPlatformRemote, runId: number): Promise<void> {
+    this.assertHost(remote);
     await this.request("POST", `${repoBase(remote)}/actions/runs/${runId}/rerun`);
   }
 
   async listRunners(remote: GitPlatformRemote): Promise<GitPlatformRunnerInfo[]> {
+    this.assertHost(remote);
     const { data } = await this.request("GET", `${repoBase(remote)}/actions/runners`);
-    const parsed = RunnersResponseSchema.parse(data);
+    const parsed = this.parsePayload(RunnersResponseSchema, data, "runners list");
     const items = Array.isArray(parsed) ? parsed : (parsed.runners ?? []);
     return items.map((r) => {
       const status = (r.status ?? "").toLowerCase();
@@ -489,17 +549,19 @@ export class ForgejoGiteaClient implements GitPlatformClient {
     remote: GitPlatformRemote,
     _options?: { description?: string; labels?: readonly string[] },
   ): Promise<GitPlatformRunnerToken> {
+    this.assertHost(remote);
     const method = this.flavor === "forgejo" ? "GET" : "POST";
     const { data } = await this.request(
       method,
       `${repoBase(remote)}/actions/runners/registration-token`,
     );
-    const { token } = RegistrationTokenSchema.parse(data);
+    const { token } = this.parsePayload(RegistrationTokenSchema, data, "runner registration token");
     this.redactor.addLiteral(token, `${this.flavor}-runner-token`);
     return { token };
   }
 
   async deleteRunner(remote: GitPlatformRemote, id: number): Promise<void> {
+    this.assertHost(remote);
     await this.request("DELETE", `${repoBase(remote)}/actions/runners/${id}`, undefined, [404]);
   }
 }
