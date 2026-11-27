@@ -60,7 +60,7 @@ describe("ownServerMemory", () => {
       CADDY_EDGE,
     );
     expect(result?.refused?.message).toBe(
-      'Your server has 2048 MB of memory. After 384 MB for the system and 128 MB for OpsCrew\'s edge, the other OpsCrew apps on it take 1280 MB of memory limits ("blog" 1024 MB and "news" 256 MB), which leaves 256 MB, and this app\'s containers have 1024 MB of memory limits. Nothing was written.',
+      'Your server has 2048 MB of memory. After 384 MB for the system and 128 MB for OpsCrew\'s edge, the other OpsCrew apps on it take 1344 MB of memory limits ("blog" 1024 MB and 32 MB for its proxy and "news" 256 MB and 32 MB for its proxy), which leaves 192 MB, and this app\'s containers have 1024 MB of memory limits. Nothing was written.',
     );
     expect(result?.refused?.hint).toBe(
       "Lower the memory limits in opscrew/plan.yaml (app.memoryMb, and those of the workers and services), add memory to the server, or remove an app from it, then run `opscrew design` again.",
@@ -82,18 +82,18 @@ describe("ownServerMemory", () => {
   });
 
   it("warns below 15% free, with how much the other apps take", () => {
-    // 4096 - 384 = 3712 MB usable; 1024 + 2048 + 128 leaves 512 MB, 13.8% of it.
+    // 4096 - 384 = 3712 MB usable; 1024 + 32 (proxy) + 2048 + 128 leaves 480 MB, 12.9% of it.
     expect(ownServerMemory(4096, 2048, [blog], CADDY_EDGE)?.warning).toBe(
-      'Your server keeps only 14% of its memory free after the memory limits of this app (2048 MB) and of the other OpsCrew app on it (1024 MB: "blog" 1024 MB), OpsCrew\'s edge and the system, so a container that grows can make the server run out of memory. Lower a memory limit in opscrew/plan.yaml, or add memory to the server.',
+      'Your server keeps only 13% of its memory free after the memory limits of this app (2048 MB) and of the other OpsCrew app on it (1056 MB: "blog" 1024 MB and 32 MB for its proxy), OpsCrew\'s edge and the system, so a container that grows can make the server run out of memory. Lower a memory limit in opscrew/plan.yaml, or add memory to the server.',
     );
   });
 
-  it("counts the tunnel connector of each other tunnelled app (the edge's figure holds one)", () => {
-    // 2048 - 384 - 128 leaves 1536 MB; blog's 1024 MB and its connector's 32 leave 480 MB.
+  it("counts the tunnel connector and per-app proxy of each other tunnelled app (the edge's figure holds one)", () => {
+    // 2048 - 384 - 128 leaves 1536 MB; blog's 1024 MB, its proxy's 32 and its connector's 32 leave 448 MB.
     const tunnelled = { name: "blog", memoryMb: 1024, tunnel: true };
-    expect(ownServerMemory(2048, 480, [tunnelled], CADDY_EDGE)?.refused).toBeUndefined();
-    expect(ownServerMemory(2048, 512, [tunnelled], CADDY_EDGE)?.refused?.message).toBe(
-      "Your server has 2048 MB of memory. After 384 MB for the system and 128 MB for OpsCrew's edge, the other OpsCrew app on it takes 1056 MB of memory limits (\"blog\" 1024 MB and 32 MB for its tunnel connector), which leaves 480 MB, and this app's containers have 512 MB of memory limits. Nothing was written.",
+    expect(ownServerMemory(2048, 448, [tunnelled], CADDY_EDGE)?.refused).toBeUndefined();
+    expect(ownServerMemory(2048, 480, [tunnelled], CADDY_EDGE)?.refused?.message).toBe(
+      "Your server has 2048 MB of memory. After 384 MB for the system and 128 MB for OpsCrew's edge, the other OpsCrew app on it takes 1088 MB of memory limits (\"blog\" 1024 MB, 32 MB for its proxy and 32 MB for its tunnel connector), which leaves 448 MB, and this app's containers have 480 MB of memory limits. Nothing was written.",
     );
   });
 

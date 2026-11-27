@@ -486,9 +486,15 @@ export const HostFactsSchema = z.object({
     /** The node is part of an active Swarm (live-restore cannot be used). */
     swarm: z.boolean(),
   }),
-  /** All containers (running or not) with their Compose project label. */
+  /** All containers (running or not) with their Compose project label and Docker networks. */
   containers: z.array(
-    z.object({ name: z.string(), project: z.string(), ports: z.string(), running: z.boolean() }),
+    z.object({
+      name: z.string(),
+      project: z.string(),
+      ports: z.string(),
+      running: z.boolean(),
+      networks: z.array(z.string()).optional(),
+    }),
   ),
   /** Compose projects that own at least one volume. */
   volumeProjects: z.array(z.string()),

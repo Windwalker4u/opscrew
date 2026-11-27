@@ -5,6 +5,7 @@ import {
   EDGE_DIR,
   EDGE_PROXIES,
   type EdgeProxy,
+  IMAGES,
   loginsLoad,
   MOVE_COPIED,
   MOVE_WAITING,
@@ -75,7 +76,10 @@ function commandOf(options: Pick<ServerOpOptions, "command">): string {
 }
 
 /** {@link ServerOpOptions} for `plan`'s app, its text redacted by `redactor`. */
-export function serverOps(plan: DeployPlan, redactor: Pick<Redactor, "redact">): ServerOpOptions {
+export function serverOps(
+  plan: DeployPlan,
+  redactor: Pick<Redactor, "redact">,
+): ServerOpOptions & { app: string } {
   return {
     redact: redactor.redact,
     folder: appDir(plan),
@@ -283,13 +287,14 @@ export async function reloadEdge(
 
 /**
  * The health check; `port` is the plan's (`app.port`, a validated TCP port), `edge` the server's
- * proxy, whose image has `wget` (busybox's in Caddy's and nginx's on Alpine, GNU's in
- * OpenLiteSpeed's on Ubuntu). With `app` (the plan's
- * validated app name) it reaches the app's web container by the name Compose gave it (a rolling
- * deploy leaves `<app>-app-2` and on), read from the running containers of the app's own project
- * and service `app` in the same command, else by the `app` alias.
+ * proxy, whose pinned image has `wget` (busybox's in Caddy's and nginx's on Alpine, GNU's in
+ * OpenLiteSpeed's on Ubuntu), and `app` the plan's validated app name. The web container runs on
+ * the app's private `<app>_internal` network (never `opscrew-edge`), so the check runs a one-off
+ * container on `<app>_internal` using the pinned edge image already on the server (`--pull never`,
+ * read from `/srv/edge/compose.yaml`, falling back to `IMAGES[edge].ref`) and reaches the running
+ * web container `<app>-app-<n>` directly.
  */
-function healthCommand(port: number, healthPath: string, edge: EdgeProxy, app?: string): string {
+function healthCommand(port: number, healthPath: string, edge: EdgeProxy, app: string): string {
   // Quoted in the remote shell; quotes, whitespace, `$`, backticks and backslashes refused.
   if (!/^\/[^\s'"`$\\]*$/.test(healthPath)) {
     throw new OpsCrewError(
@@ -300,18 +305,14 @@ function healthCommand(port: number, healthPath: string, edge: EdgeProxy, app?: 
       },
     );
   }
-  // A one-off container of the edge's proxy (busybox wget) on the edge's network, which the app's
-  // web container joins: works whether or not the proxy is running (it is stopped on the new
-  // server until DNS points at it).
-  const wget = `cd ${EDGE_DIR} && docker compose run --rm --no-deps -T --entrypoint wget ${edge} -q -O /dev/null -T 5`;
-  if (app === undefined) return `${wget} 'http://app:${port}${healthPath}'`;
   const running = `docker ps --filter label=com.docker.compose.project=${app} --filter label=com.docker.compose.service=app --format '{{.Names}}'`;
-  return `name="$(${running} | head -n 1)" && { [ -n "$name" ] || { echo 'no app container runs' >&2; exit 1; }; } && ${wget} "http://$name:${port}${healthPath}"`;
+  const edgeImage = `awk -v s='  ${edge}:' '$0==s{f=1;next} f&&/^  [a-z]/{f=0} f&&/^    image:/{print $2;exit}' ${EDGE_DIR}/compose.yaml 2> /dev/null`;
+  return `name="$(${running} | head -n 1)" && { [ -n "$name" ] || { echo 'no app container runs' >&2; exit 1; }; } && img="$(${edgeImage})" && docker run --rm --pull never --network ${app}_internal --entrypoint wget "\${img:-${IMAGES[edge].ref}}" -q -O /dev/null -T 5 "http://$name:${port}${healthPath}"`;
 }
 
-/** Where the health check reaches the app, in a message: its web container, else the alias. */
-function appHost(app: string | undefined): string {
-  return app === undefined ? "app" : `${app}-app-<n>`;
+/** Where the health check reaches the app, in a message: its web container. */
+function appHost(app: string): string {
+  return `${app}-app-<n>`;
 }
 
 async function probe(
@@ -328,7 +329,7 @@ async function probe(
 }
 
 /**
- * True when the app answers `http://app:<port><healthPath>` inside the server's Compose network.
+ * True when the app answers `http://<app>-app-<n>:<port><healthPath>` on its internal network.
  * Failures (including SSH errors) are false; invalid port or path throws `INVALID_INPUT`.
  */
 export async function isAppHealthy(
@@ -336,12 +337,14 @@ export async function isAppHealthy(
   port: number,
   healthPath: string,
   edge: EdgeProxy,
-  app?: string,
+  app: string,
 ): Promise<boolean> {
   return (await probe(remote, healthCommand(port, healthPath, edge, app))).healthy;
 }
 
 export interface WaitAppHealthyOptions extends ServerOpOptions {
+  /** The app's name, whose web container and `<app>_internal` network the check probes. */
+  app: string;
   /** The server's proxy, whose image runs the check. */
   edge: EdgeProxy;
   /** Default 5 minutes. */

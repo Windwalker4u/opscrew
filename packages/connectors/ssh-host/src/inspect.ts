@@ -696,7 +696,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ],
   [
     "containers",
-    `docker_up && docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Ports}}|{{.State}}'`,
+    `docker_up && docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Ports}}|{{.State}}|{{.Networks}}'`,
   ],
   ["volumes", `docker_up && docker volume ls --format '{{.Label "com.docker.compose.project"}}'`],
   ["users", USERS_SNIPPET],

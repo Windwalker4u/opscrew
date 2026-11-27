@@ -198,6 +198,7 @@ export class FakeComputer {
     this.containers.push(
       { name: `${project}-app-1`, project, service: "app", running: true },
       { name: `${project}-db-1`, project, service: "db", running: true },
+      { name: `${project}-kamal-proxy-1`, project, service: "kamal-proxy", running: true },
       {
         name: "opscrew-edge-caddy-1",
         project: "opscrew-edge",
@@ -210,6 +211,7 @@ export class FakeComputer {
     this.networks.push({ name: `${project}_internal`, project }, { name: "opscrew-edge" });
     this.volumes.push(
       { name: `${project}_db_data`, project },
+      { name: `${project}_kamal-proxy-config`, project },
       ...["caddy_data", "caddy_config", "kamal-proxy-config"].map((volume) => ({
         name: `opscrew-edge_${volume}`,
         project: "opscrew-edge",

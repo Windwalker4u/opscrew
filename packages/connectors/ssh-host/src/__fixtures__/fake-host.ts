@@ -163,6 +163,7 @@ export interface FakeContainer {
   project: string;
   ports: string;
   stopped?: boolean;
+  networks?: string[];
 }
 
 interface UfwRule {
@@ -1004,7 +1005,10 @@ export class FakeHost implements RemoteExec {
       "containers",
       this.dockerRunning
         ? this.containers
-            .map((c) => `${c.name}|${c.project}|${c.stopped ? "" : c.ports}|${c.stopped ? "exited" : "running"}`)
+            .map(
+              (c) =>
+                `${c.name}|${c.project}|${c.stopped ? "" : c.ports}|${c.stopped ? "exited" : "running"}|${(c.networks ?? []).join(",")}`,
+            )
             .join("\n")
         : "",
       this.dockerRunning ? 0 : 1,

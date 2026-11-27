@@ -46,6 +46,14 @@ exports[`the deploy on the OpenLiteSpeed edge > matches the snapshots of the fir
   fi
   cp additions.openlitespeed "$EDGE_DIR"/sites/shop.additions
   if ! edge up -d --wait --remove-orphans || ! edge exec -T openlitespeed sh /etc/opscrew/reload.sh < /dev/null; then
+    if [ -n "\${old:-}" ]; then
+      _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+      _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+      if [ -n "$_old_name" ]; then
+        docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+      fi
+    fi
+    if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
     if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.vhconf; else rm -f "$EDGE_DIR"/sites/shop.vhconf; fi
     for f in vhost map; do
       if [ -f .site.previous.$f ]; then cp .site.previous.$f "$EDGE_DIR"/sites/shop.$f; else rm -f "$EDGE_DIR"/sites/shop.$f; fi
@@ -76,6 +84,14 @@ exports[`the deploy on the OpenLiteSpeed edge > matches the snapshots of the fir
   printf '%s\\n' "$out"
   if [ "$status" -ne 0 ]; then
     if [ -f .edge.previous ]; then
+      if [ -n "\${old:-}" ]; then
+        _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+        _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+        if [ -n "$_old_name" ]; then
+          docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+        fi
+      fi
+      if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.vhconf; else rm -f "$EDGE_DIR"/sites/shop.vhconf; fi
       for f in vhost map; do
         if [ -f .site.previous.$f ]; then cp .site.previous.$f "$EDGE_DIR"/sites/shop.$f; else rm -f "$EDGE_DIR"/sites/shop.$f; fi
@@ -98,6 +114,14 @@ exports[`the deploy on the OpenLiteSpeed edge > matches the snapshots of the fir
   cp edge/sites/shop.vhconf "$EDGE_DIR"/sites/shop.vhconf
   if ! edge exec -T openlitespeed sh /etc/opscrew/reload.sh < /dev/null; then
     if [ -f .edge.previous ]; then
+      if [ -n "\${old:-}" ]; then
+        _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+        _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+        if [ -n "$_old_name" ]; then
+          docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+        fi
+      fi
+      if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.vhconf; else rm -f "$EDGE_DIR"/sites/shop.vhconf; fi
       for f in vhost map; do
         if [ -f .site.previous.$f ]; then cp .site.previous.$f "$EDGE_DIR"/sites/shop.$f; else rm -f "$EDGE_DIR"/sites/shop.$f; fi
@@ -162,6 +186,14 @@ exports[`the deploy on the OpenLiteSpeed edge > matches the snapshots of the fir
   cp edge/sites/shop.vhconf "$EDGE_DIR"/sites/shop.vhconf
   rm -f "$EDGE_DIR"/sites/shop.additions
   if ! edge up -d --wait --remove-orphans || ! edge exec -T openlitespeed sh /etc/opscrew/reload.sh < /dev/null; then
+    if [ -n "\${old:-}" ]; then
+      _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+      _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+      if [ -n "$_old_name" ]; then
+        docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+      fi
+    fi
+    if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
     if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.vhconf; else rm -f "$EDGE_DIR"/sites/shop.vhconf; fi
     for f in vhost map; do
       if [ -f .site.previous.$f ]; then cp .site.previous.$f "$EDGE_DIR"/sites/shop.$f; else rm -f "$EDGE_DIR"/sites/shop.$f; fi

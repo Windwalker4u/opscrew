@@ -15,6 +15,7 @@ import {
   type EdgeProxy,
   edgeMemoryMb,
   edgeProxy,
+  KAMAL_PROXY_MEMORY_MB,
   serviceSpec,
   webOnlyFromCloudflare,
 } from "@opscrew/iac-templates";
@@ -1337,7 +1338,9 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   // A preview server holds its cap of previews, each with the app's containers.
   const planPreviews = plan.environment?.previews;
   const cap = planPreviews?.cap;
-  const onAppMb = appMemoryMb(onApp) * (cap ?? 1);
+  const onAppMb =
+    appMemoryMb(onApp) * (cap ?? 1) +
+    (cap !== undefined ? KAMAL_PROXY_MEMORY_MB * Math.max(0, cap - 1) : 0);
   if (chosen.target.provider === "own" && cap !== undefined) {
     // On another environment's server, after that environment's own needs (`sharedServerDesign`).
     requirePreviewsFit(
@@ -1355,7 +1358,9 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       appMemoryMb(onApp),
       [
         ...(ownServer?.apps ?? []).filter((app) => app.name !== plan.app.name),
-        ...(sharedPreviews === undefined ? [] : [{ ...sharedPreviews, tunnel: false }]),
+        ...(sharedPreviews === undefined
+          ? []
+          : [{ ...sharedPreviews, tunnel: false, proxy: false }]),
       ],
       edgeMemoryMb(edgeProxy(plan)),
     );

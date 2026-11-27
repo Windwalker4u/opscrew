@@ -2,7 +2,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { detectProject } from "@opscrew/detect";
-import { additionsPath, EDGE_PROXIES, type EdgeProxy, siteHosts } from "@opscrew/iac-templates";
+import {
+  additionsPath,
+  EDGE_PROXIES,
+  type EdgeProxy,
+  edgeAppUpstream,
+  siteHosts,
+} from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { scanProxyAdditions } from "@opscrew/secops";
 import { afterEach, describe, expect, it } from "vitest";
@@ -69,7 +75,11 @@ describe.each(["caddy", "nginx"] as const)("vercelAdditions on %s", (proxy) => {
       expect(text.split("\n")[0]).toBe(
         `# Translated by OpsCrew from vercel.json (SHA-256 ${facts.platformRouting?.sha256}) for ${label}.`,
       );
-      const ctx = { proxy, hostnames: siteHosts(p), upstream: EDGE_PROXIES[proxy].upstream };
+      const ctx = {
+        proxy,
+        hostnames: siteHosts(p),
+        upstream: edgeAppUpstream(proxy, p.app.name),
+      };
       expect(scanProxyAdditions(text, ctx)).toEqual([]);
       // Every rule detect left out is listed with its reason.
       for (const entry of facts.platformRouting?.unsupported ?? []) {

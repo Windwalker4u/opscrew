@@ -6,7 +6,12 @@
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { EDGE_PROJECT, MONITORING_PUSH_NETWORK, renderDashboards } from "@opscrew/iac-templates";
+import {
+  appProxyAlias,
+  EDGE_PROJECT,
+  MONITORING_PUSH_NETWORK,
+  renderDashboards,
+} from "@opscrew/iac-templates";
 import { MONITORING_GRAFANA_PORT, MONITORING_PUSH_PORT } from "@opscrew/plan-schema";
 import { parse, stringify } from "yaml";
 import { docker, tail } from "./docker-support";
@@ -114,11 +119,18 @@ export function localStack(
  * The shared edge's `compose.yaml` adapted to this computer: its network is the run's
  * `edgeNetwork`, and Caddy publishes only HTTPS, on `127.0.0.1:httpsPort`.
  */
-export function localEdge(content: string, o: { edgeNetwork: string; httpsPort: number }): string {
+export function localEdge(
+  content: string,
+  o: { edgeNetwork: string; httpsPort: number; app?: string },
+): string {
   const doc = load(content);
   const caddy = service(doc, "caddy");
   rendered(caddy.ports, ["80:80", "443:443", "443:443/udp"], "Caddy's ports");
   caddy.ports = [`127.0.0.1:${o.httpsPort}:443`];
+  if (o.app !== undefined) {
+    const kamal = service(doc, "kamal-proxy");
+    kamal.networks = { [EDGE_PROJECT]: { aliases: [appProxyAlias(o.app)] } };
+  }
   doc.networks = { ...doc.networks, [EDGE_PROJECT]: { external: true, name: o.edgeNetwork } };
   return dump(doc);
 }

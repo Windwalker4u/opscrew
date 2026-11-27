@@ -43,7 +43,7 @@ import tls from "node:tls";
 import { recordServerAddress, tlsStatusReport } from "@opscrew/agents";
 import { createTestPhaseDeps } from "@opscrew/agents/testing";
 import { generateP256, NodeCommandRunner, selfSignedClientCertificate } from "@opscrew/core";
-import { EDGE_PROJECT, EDGE_PROXIES, type EdgeProxy, siteHosts } from "@opscrew/iac-templates";
+import { EDGE_PROJECT, type EdgeProxy, edgeAppUpstream, siteHosts } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { certbotFailureCommand, parseCertbotFailure, scanProxyAdditions } from "@opscrew/secops";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -201,10 +201,11 @@ describe.skipIf(SKIP !== undefined)("the shared edge on Docker, with Pebble (014
     return edge;
   }
 
-  /** A stand-in app container answering `body`, routed on `edge` for `plan`. */
+  /** A stand-in app container answering `body` on its own internal network, routed via its per-app kamal-proxy. */
   async function standIn(edge: LocalEdge, plan: DeployPlan, body: string): Promise<void> {
+    const internal = await edge.ensureAppProxy(plan.app.name);
     const container = unique(`app-${plan.app.name}`);
-    await startStandIn(network, container, APP_PORT, body);
+    await startStandIn(internal, container, APP_PORT, body);
     containers.add(container);
     await edge.route(plan, `${container}:${APP_PORT}`);
   }
@@ -402,7 +403,7 @@ describe.skipIf(SKIP !== undefined)("the shared edge on Docker, with Pebble (014
     it(
       "serves a header addition; refuses an unsafe one by its rules and keeps serving through a broken one",
       async () => {
-        const { upstream } = EDGE_PROXIES[proxy];
+        const upstream = edgeAppUpstream(proxy, shop.app.name);
         const header =
           proxy === "caddy"
             ? 'header X-Opscrew-Addition "served"\n'
@@ -592,7 +593,7 @@ describe.skipIf(SKIP !== undefined)("the shared edge on Docker, with Pebble (014
         },
         120_000,
       );
-      const kamal = await edge.containerId("kamal-proxy");
+      const kamal = await edge.appProxyId(caddy.app.name);
       const loop = requestLoop(
         () => httpsGet(edge.ports.https, SHOP),
         (answer) => answer.status === 200 && answer.body === "switch ok",
@@ -611,7 +612,7 @@ describe.skipIf(SKIP !== undefined)("the shared edge on Docker, with Pebble (014
       // The plan states under a minute for hostnames not proxied by Cloudflare.
       expect(result.longestOutageMs).toBeLessThan(60_000);
       expect(await edge.containerId("caddy")).toBeUndefined();
-      expect(await edge.containerId("kamal-proxy")).toBe(kamal);
+      expect(await edge.appProxyId(caddy.app.name)).toBe(kamal);
       const compose = parse(await readFile(edge.project.file, "utf8")) as Record<string, unknown>;
       expect(compose["x-opscrew-edge-proxy"]).toBe("nginx");
     },

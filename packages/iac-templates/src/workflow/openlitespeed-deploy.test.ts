@@ -73,9 +73,11 @@ describe("the deploy on the OpenLiteSpeed edge", () => {
       ].join("\n"),
     );
     // A site the check refuses goes, all three files, or the server's come back.
-    expect(part).toContain(
+    const failedReload = `  if ! edge up -d --wait --remove-orphans || ! ${RELOAD}; then\n`;
+    expect(part).toContain(failedReload);
+    const afterFailed = part.slice(part.indexOf(failedReload));
+    expect(afterFailed).toContain(
       [
-        `  if ! edge up -d --wait --remove-orphans || ! ${RELOAD}; then`,
         '    if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.vhconf; else rm -f "$EDGE_DIR"/sites/shop.vhconf; fi',
         "    for f in vhost map; do",
         '      if [ -f .site.previous.$f ]; then cp .site.previous.$f "$EDGE_DIR"/sites/shop.$f; else rm -f "$EDGE_DIR"/sites/shop.$f; fi',
@@ -170,9 +172,13 @@ describe("the deploy on the OpenLiteSpeed edge", () => {
       "fi",
       ') 9> "$EDGE_DIR"/.lock',
     ].join("\n");
-    /** Each part of `script` after a switch of kamal-proxy's, its lines unindented. */
+    /** Each part of `script` after a forward/rollback switch of kamal-proxy's, its lines unindented. */
     const afterEach = (script: string) =>
-      script.replace(/\n +/g, "\n").split("kamal-proxy deploy shop").slice(1);
+      script
+        .replace(/\n +/g, "\n")
+        .split("kamal-proxy deploy shop")
+        .slice(1)
+        .filter((part) => !part.startsWith(' --target "${_old_name#/}:'));
     // After each switch (the plan's database gives the start script two), never before: the
     // version before must not fill the cache again.
     for (const script of [start(dnsOnly, ctx), rollbackCommands(dnsOnly).join("\n")]) {

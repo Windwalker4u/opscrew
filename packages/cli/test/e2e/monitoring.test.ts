@@ -391,7 +391,11 @@ describe.skipIf(SKIP !== undefined)("self-hosted monitoring on Docker (020)", ()
     await writeCompose(
       projects.edge,
       edgeDir,
-      localEdge(renderEdgeCompose(plan).content, { edgeNetwork: networks.edge, httpsPort }),
+      localEdge(renderEdgeCompose(plan).content, {
+        edgeNetwork: networks.edge,
+        httpsPort,
+        app,
+      }),
     );
     await writeFiles(edgeDir, [
       {

@@ -216,7 +216,7 @@ describe("readComponentStatus on a server OpsCrew created", () => {
 
     expect(ssh.hosts).toEqual([SERVER_IPV4]);
     expect(ssh.commands).toEqual([
-      "docker ps -a --filter label=com.docker.compose.project=shop --filter label=com.docker.compose.oneoff=False --format '{{.Names}}|{{.State}}'",
+      "docker ps -a --filter label=com.docker.compose.project=shop --filter label=com.docker.compose.oneoff=False --format '{{.Names}}|{{.State}}|{{.Networks}}'",
     ]);
     expect(status.components.find((c) => c.service === "worker")).toMatchObject({
       containers: 2,

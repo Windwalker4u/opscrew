@@ -17,6 +17,7 @@ import type { CommandResult } from "@opscrew/contracts";
 import { buildCsr, findExecutable, generateP256, NodeCommandRunner } from "@opscrew/core";
 import { FakeAgentRuntime } from "@opscrew/core/testing";
 import {
+  appProxyAlias,
   EDGE_PROJECT,
   EDGE_PROXIES,
   type EdgeProxy,
@@ -389,7 +390,7 @@ export interface EdgeDeploy {
  * The deploy's commands for the shared edge, taken from the deploy workflow OpsCrew renders for
  * the plan (its server script, `switchCommands`). certbot's are there only on nginx.
  */
-function deployCommands(workflow: string) {
+export function deployCommands(workflow: string) {
   const find = (pattern: RegExp) => pattern.exec(workflow)?.[1];
   const up = find(/if ! (edge up -d --wait --remove-orphans) \|\| ! /);
   const reload = find(/--remove-orphans \|\| ! (edge exec -T [^\n]*? < \/dev\/null); then/);
@@ -434,6 +435,8 @@ function required(command: string | undefined, what: string): string {
  */
 export class LocalEdge {
   readonly project: ComposeProject;
+  /** Per-app kamal-proxy containers and internal Docker networks, by app name. */
+  readonly #appProxies = new Map<string, { container: string; network: string }>();
 
   constructor(
     readonly dir: string,
@@ -442,6 +445,50 @@ export class LocalEdge {
     readonly pebble: Pebble,
   ) {
     this.project = { name: unique("edge"), file: path.join(dir, "compose.yaml") };
+  }
+
+  /**
+   * Ensures `app` has its own internal Docker network and per-app `kamal-proxy` container
+   * bridging that internal network and the edge network under alias `<app>-kamal-proxy`.
+   * Returns the internal network name so the stand-in app container joins only it.
+   */
+  async ensureAppProxy(app: string): Promise<string> {
+    const existing = this.#appProxies.get(app);
+    if (existing !== undefined) return existing.network;
+    const internal = unique(`internal-${app}`);
+    const container = unique(`proxy-${app}`);
+    await dockerOk(
+      ["network", "create", "--label", LABEL, internal],
+      `creating ${app}'s internal network`,
+    );
+    await dockerOk(
+      [
+        "run",
+        "-d",
+        "--name",
+        container,
+        "--label",
+        LABEL,
+        "--network",
+        internal,
+        IMAGES.kamalProxy.ref,
+      ],
+      `starting ${app}'s kamal-proxy`,
+    );
+    await dockerOk(
+      ["network", "connect", "--alias", appProxyAlias(app), this.network, container],
+      `connecting ${app}'s kamal-proxy to the edge network`,
+    );
+    this.#appProxies.set(app, { container, network: internal });
+    return internal;
+  }
+
+  /** The id of `app`'s running per-app `kamal-proxy` container, if started. */
+  async appProxyId(app: string): Promise<string | undefined> {
+    const entry = this.#appProxies.get(app);
+    if (entry === undefined) return undefined;
+    const inspected = await docker(["inspect", "--format", "{{.Id}}", entry.container]);
+    return inspected.exitCode === 0 ? inspected.stdout.trim() || undefined : undefined;
   }
 
   /** Runs `script` (POSIX sh) with the deploy's `edge` function for this project. */
@@ -590,16 +637,18 @@ export class LocalEdge {
   }
 
   /**
-   * Hands the app to the edge's kamal-proxy at `target` (`<container>:<port>`), as the deploy
+   * Hands the app to its per-app `kamal-proxy` at `target` (`<container>:<port>`), as the deploy
    * hands each new copy, with the plan's domain (the proxy redirects www) and health path.
    */
   async route(plan: DeployPlan, target: string): Promise<void> {
+    await this.ensureAppProxy(plan.app.name);
+    const entry = this.#appProxies.get(plan.app.name);
+    if (entry === undefined) throw new Error(`No per-app kamal-proxy for ${plan.app.name}.`);
     const [domain] = siteHosts(plan);
-    await this.compose(
+    await dockerOk(
       [
         "exec",
-        "-T",
-        "kamal-proxy",
+        entry.container,
         "kamal-proxy",
         "deploy",
         plan.app.name,
@@ -609,15 +658,20 @@ export class LocalEdge {
         "--health-check-path",
         plan.app.healthPath,
       ],
-      `routing ${plan.app.name} on kamal-proxy`,
+      `routing ${plan.app.name} on its kamal-proxy`,
     );
   }
 
   /**
    * Removes the edge's containers and volumes (also those of a proxy it switched from, which its
-   * Compose file no longer names), and its folder.
+   * Compose file no longer names), every per-app kamal-proxy and internal network, and its folder.
    */
   async remove(): Promise<void> {
+    for (const { container, network } of this.#appProxies.values()) {
+      await docker(["rm", "-f", "-v", container]);
+      await docker(["network", "rm", network]);
+    }
+    this.#appProxies.clear();
     await compose(this.project, ["down", "-v", "--remove-orphans"]);
     const label = `label=com.docker.compose.project=${this.project.name}`;
     const volumes = (await docker(["volume", "ls", "-q", "--filter", label])).stdout.split(/\s+/);

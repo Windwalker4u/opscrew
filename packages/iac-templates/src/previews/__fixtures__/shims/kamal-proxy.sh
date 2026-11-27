@@ -2,6 +2,11 @@
 # The fake kamal-proxy of a preview server's tests (see ../server.ts).
 S="$WORK/state"
 echo "kamal-proxy $*" >> "$S/kamal.log"
+ROUTES="$S/routes"
+if [[ "${KAMAL_PROJECT:-}" == opscrew-edge ]]; then
+  ROUTES="$S/shared-routes"
+  mkdir -p "$ROUTES"
+fi
 case "$1" in
   deploy)
     target=""
@@ -18,17 +23,17 @@ case "$1" in
       echo "Error: target failed to become healthy within configured timeout (60s)" >&2
       exit 1
     fi
-    echo "$target $host" > "$S/routes/$2"
+    echo "$target $host" > "$ROUTES/$2"
     ;;
   remove)
-    if [[ ! -f "$S/routes/$2" ]]; then
+    if [[ ! -f "$ROUTES/$2" ]]; then
       echo "Error: service not found" >&2
       exit 1
     fi
-    rm -f "$S/routes/$2"
+    rm -f "$ROUTES/$2"
     ;;
   pause | resume)
-    if [[ ! -f "$S/routes/$2" ]]; then
+    if [[ ! -f "$ROUTES/$2" ]]; then
       echo "Error: service not found" >&2
       exit 1
     fi

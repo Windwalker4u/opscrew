@@ -343,7 +343,7 @@ describe("the app's site on OpenLiteSpeed", () => {
   it("sends the app's traffic and its WebSockets to kamal-proxy, with the headers on every answer", () => {
     const content = vhconf(BLOG);
     expect(content).toContain(
-      "extprocessor kamal-proxy {\n  type                    proxy\n  address                 kamal-proxy:80\n",
+      "extprocessor kamal-proxy {\n  type                    proxy\n  address                 blog-kamal-proxy:80\n",
     );
     expect(content).toContain(
       [
@@ -363,7 +363,7 @@ describe("the app's site on OpenLiteSpeed", () => {
         "}",
       ].join("\n"),
     );
-    expect(content).toContain("websocket / {\n  address                 kamal-proxy:80\n}");
+    expect(content).toContain("websocket / {\n  address                 blog-kamal-proxy:80\n}");
     expect(content).toContain("\n  respBuffer              0\n");
   });
 

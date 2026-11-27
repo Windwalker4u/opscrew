@@ -289,6 +289,7 @@ async function startOnNewCopy(
   await audited(deps, "start app", app.name);
   await waitAppHealthy(app.remote, plan.app.port, plan.app.healthPath, {
     ...ops,
+    app: plan.app.name,
     edge: edgeProxy(plan),
     ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
     ...(services.now !== undefined ? { now: services.now } : {}),

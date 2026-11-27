@@ -50,10 +50,10 @@ context /opscrew-error.html {
   allowBrowse             1
 }
 
-# kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.
+# This app's own kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.
 extprocessor kamal-proxy {
   type                    proxy
-  address                 kamal-proxy:80
+  address                 blog-kamal-proxy:80
   maxConns                1000
   pcKeepAliveTimeout      60
   initTimeout             60
@@ -84,7 +84,7 @@ context exp:^/(\\.well-known/acme-challenge/[^/]+)$ {
 
 # WebSockets: an Upgrade request reaches the app as one.
 websocket / {
-  address                 kamal-proxy:80
+  address                 blog-kamal-proxy:80
 }
 
 rewrite {
@@ -159,10 +159,10 @@ context /opscrew-error.html {
   allowBrowse             1
 }
 
-# kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.
+# This app's own kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.
 extprocessor kamal-proxy {
   type                    proxy
-  address                 kamal-proxy:80
+  address                 blog-kamal-proxy:80
   maxConns                1000
   pcKeepAliveTimeout      60
   initTimeout             60
@@ -194,7 +194,7 @@ context exp:^/(\\.well-known/acme-challenge/[^/]+)$ {
 
 # WebSockets: an Upgrade request reaches the app as one.
 websocket / {
-  address                 kamal-proxy:80
+  address                 blog-kamal-proxy:80
 }
 
 rewrite {
@@ -289,10 +289,10 @@ context /opscrew-error.html {
   allowBrowse             1
 }
 
-# kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.
+# This app's own kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.
 extprocessor kamal-proxy {
   type                    proxy
-  address                 kamal-proxy:80
+  address                 shop-kamal-proxy:80
   maxConns                1000
   pcKeepAliveTimeout      60
   initTimeout             60
@@ -317,7 +317,7 @@ RequestHeader unset X-Forwarded-Proto
 
 # WebSockets: an Upgrade request reaches the app as one.
 websocket / {
-  address                 kamal-proxy:80
+  address                 shop-kamal-proxy:80
 }
 
 rewrite {

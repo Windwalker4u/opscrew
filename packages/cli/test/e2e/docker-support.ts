@@ -6,7 +6,12 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { findExecutable, NodeCommandRunner } from "@opscrew/core";
-import { EDGE_PROJECT, renderCompose, renderRuntimeFiles } from "@opscrew/iac-templates";
+import {
+  APP_KAMAL_PROXY_SERVICE,
+  EDGE_PROJECT,
+  renderCompose,
+  renderRuntimeFiles,
+} from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { parse, stringify } from "yaml";
 
@@ -109,7 +114,7 @@ export interface ComposeService {
   volumes?: string[];
   configs?: { source: string; target: string }[];
   ports?: string[];
-  networks?: string[];
+  networks?: string[] | Record<string, unknown>;
   mem_limit?: string;
   memswap_limit?: string;
 }
@@ -156,7 +161,10 @@ export function localServerCompose(plan: DeployPlan, appPort?: number): string {
     volumes?: Record<string, unknown>;
     configs?: Record<string, { content: string }>;
   };
+  // Standalone local passes hit the app container directly without OpsCrew's edge or kamal-proxy.
+  delete doc.services[APP_KAMAL_PROXY_SERVICE];
   const volumes: Record<string, unknown> = { ...doc.volumes };
+  delete volumes["kamal-proxy-config"];
   const configs: Record<string, { content: string }> = {};
   for (const [name, service] of Object.entries(doc.services)) {
     const local: string[] = [];
@@ -183,10 +191,15 @@ export function localServerCompose(plan: DeployPlan, appPort?: number): string {
     }
     if (local.length > 0) service.volumes = local;
     else delete service.volumes;
-    service.networks = service.networks?.filter((network) => network !== EDGE_PROJECT);
+    if (Array.isArray(service.networks)) {
+      service.networks = service.networks.filter((network) => network !== EDGE_PROJECT);
+    } else if (service.networks !== undefined) {
+      delete service.networks[EDGE_PROJECT];
+    }
   }
   delete doc.networks?.[EDGE_PROJECT];
   if (Object.keys(volumes).length > 0) doc.volumes = volumes;
+  else delete doc.volumes;
   if (Object.keys(configs).length > 0) doc.configs = configs;
   const app = doc.services.app;
   if (app !== undefined && appPort !== undefined) app.ports = [`127.0.0.1::${appPort}`];

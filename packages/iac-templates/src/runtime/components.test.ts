@@ -80,6 +80,7 @@ describe("the services on a server", () => {
     const compose = renderCompose(FULL);
     expect(Object.keys(parse(compose.content).services)).toEqual([
       "app",
+      "kamal-proxy",
       "worker",
       "cron",
       "mysql",
@@ -157,7 +158,12 @@ describe("the services on a server", () => {
       "kafka_config:/mnt/shared/config",
     ]);
     const doc = parse(renderCompose(withServices([{ kind: "kafka" }])).content);
-    expect(Object.keys(doc.volumes)).toEqual(["kafka_data", "kafka_secrets", "kafka_config"]);
+    expect(Object.keys(doc.volumes)).toEqual([
+      "kamal-proxy-config",
+      "kafka_data",
+      "kafka_secrets",
+      "kafka_config",
+    ]);
   });
 
   it("reads a service's settings and secrets from its env file", () => {
@@ -319,6 +325,7 @@ describe("the search engines' host setting", () => {
     const all = services(plan());
     expect(Object.keys(all)).toEqual([
       "app",
+      "kamal-proxy",
       "sysctl",
       "opensearch",
       "elasticsearch",
@@ -753,7 +760,7 @@ describe("SQLite", () => {
       "sqlite:/app/storage",
     ]);
     expect(doc.services.mysql?.volumes).not.toContain("sqlite:/app/storage");
-    expect(doc.volumes).toEqual({ sqlite: {} });
+    expect(doc.volumes).toEqual({ "kamal-proxy-config": {}, sqlite: {} });
   });
 
   it("mounts it at the folder the app runs in, for each builder", () => {
@@ -794,6 +801,7 @@ describe("SQLite", () => {
   it("declares it after the services' own volumes", () => {
     const kafka = withSqlite(withBuild(withServices([{ kind: "kafka" }]), "railpack"));
     expect(Object.keys(parse(renderCompose(kafka).content).volumes)).toEqual([
+      "kamal-proxy-config",
       "kafka_data",
       "kafka_secrets",
       "kafka_config",
@@ -824,7 +832,7 @@ describe("SQLite", () => {
     expect(doc.services.app?.volumes).toBeUndefined();
     expect(doc.services.worker?.volumes).toBeUndefined();
     expect(doc.services.cron?.volumes).toEqual(["./crontab:/etc/opscrew/crontab:ro"]);
-    expect(doc.volumes).toBeUndefined();
+    expect(doc.volumes).toEqual({ "kamal-proxy-config": {} });
   });
 });
 
@@ -851,7 +859,7 @@ describe("the kept folder (storage.files)", () => {
       "files:/app/storage",
     ]);
     expect(doc.services.mysql?.volumes).not.toContain("files:/app/storage");
-    expect(doc.volumes).toEqual({ files: {} });
+    expect(doc.volumes).toEqual({ "kamal-proxy-config": {}, files: {} });
   });
 
   it("comes after SQLite's volume, each at its own folder, after the services' volumes", () => {
@@ -862,6 +870,7 @@ describe("the kept folder (storage.files)", () => {
     const doc = parse(renderCompose(kafka).content);
     expect(doc.services.app?.volumes).toEqual(["sqlite:/app/data", "files:/app/uploads"]);
     expect(Object.keys(doc.volumes)).toEqual([
+      "kamal-proxy-config",
       "kafka_data",
       "kafka_secrets",
       "kafka_config",
@@ -895,6 +904,6 @@ describe("the kept folder (storage.files)", () => {
     const doc = parse(renderCompose(app).content);
     expect(doc.services.app?.volumes).toBeUndefined();
     expect(doc.services.worker?.volumes).toBeUndefined();
-    expect(doc.volumes).toBeUndefined();
+    expect(doc.volumes).toEqual({ "kamal-proxy-config": {} });
   });
 });

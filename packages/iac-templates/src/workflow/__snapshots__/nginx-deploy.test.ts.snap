@@ -40,6 +40,14 @@ exports[`the deploy on the nginx edge > matches the snapshots of the first certi
   fi
   cp additions.nginx "$EDGE_DIR"/sites/shop.additions
   if ! edge up -d --wait --remove-orphans || ! edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null; then
+    if [ -n "\${old:-}" ]; then
+      _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+      _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+      if [ -n "$_old_name" ]; then
+        docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+      fi
+    fi
+    if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
     if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.conf; else rm -f "$EDGE_DIR"/sites/shop.conf; fi
     if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop.additions; else rm -f "$EDGE_DIR"/sites/shop.additions; fi
     for f in origin.pem origin.key pull.pem; do
@@ -67,6 +75,14 @@ exports[`the deploy on the nginx edge > matches the snapshots of the first certi
   printf '%s\\n' "$out"
   if [ "$status" -ne 0 ]; then
     if [ -f .edge.previous ]; then
+      if [ -n "\${old:-}" ]; then
+        _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+        _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+        if [ -n "$_old_name" ]; then
+          docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+        fi
+      fi
+      if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.conf; else rm -f "$EDGE_DIR"/sites/shop.conf; fi
       if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop.additions; else rm -f "$EDGE_DIR"/sites/shop.additions; fi
       for f in origin.pem origin.key pull.pem; do
@@ -86,6 +102,14 @@ exports[`the deploy on the nginx edge > matches the snapshots of the first certi
   cp edge/sites/shop.conf "$EDGE_DIR"/sites/shop.conf
   if ! edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null; then
     if [ -f .edge.previous ]; then
+      if [ -n "\${old:-}" ]; then
+        _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+        _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+        if [ -n "$_old_name" ]; then
+          docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+        fi
+      fi
+      if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.conf; else rm -f "$EDGE_DIR"/sites/shop.conf; fi
       if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop.additions; else rm -f "$EDGE_DIR"/sites/shop.additions; fi
       for f in origin.pem origin.key pull.pem; do
@@ -141,6 +165,14 @@ exports[`the deploy on the nginx edge > matches the snapshots of the first certi
   cp edge/sites/shop.conf "$EDGE_DIR"/sites/shop.conf
   rm -f "$EDGE_DIR"/sites/shop.additions
   if ! edge up -d --wait --remove-orphans || ! edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null; then
+    if [ -n "\${old:-}" ]; then
+      _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+      _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+      if [ -n "$_old_name" ]; then
+        docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+      fi
+    fi
+    if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
     if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.conf; else rm -f "$EDGE_DIR"/sites/shop.conf; fi
     if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop.additions; else rm -f "$EDGE_DIR"/sites/shop.additions; fi
     for f in origin.pem origin.key pull.pem; do
@@ -187,6 +219,14 @@ exports[`the deploy on the nginx edge > matches the snapshots of the first certi
   cp edge/sites/shop.caddy "$EDGE_DIR"/sites/shop.caddy
   rm -f "$EDGE_DIR"/sites/shop.additions
   if ! edge up -d --wait --remove-orphans || ! edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
+    if [ -n "\${old:-}" ]; then
+      _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+      _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+      if [ -n "$_old_name" ]; then
+        docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+      fi
+    fi
+    if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
     if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.caddy; else rm -f "$EDGE_DIR"/sites/shop.caddy; fi
     if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop.additions; else rm -f "$EDGE_DIR"/sites/shop.additions; fi
     for f in origin.pem origin.key pull.pem; do

@@ -7,7 +7,7 @@
  */
 import type { HostFacts } from "@opscrew/connector-ssh-host";
 import { listText, OpsCrewError, type ProjectPaths, readTextIfExists } from "@opscrew/core";
-import { EDGE_PROXIES, edgeProxy } from "@opscrew/iac-templates";
+import { EDGE_PROXIES, edgeProxy, KAMAL_PROXY_MEMORY_MB } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type DeployPlan,
@@ -159,9 +159,9 @@ export async function hostDeployLogin(
   );
 }
 
-/** The previews' memory on their server: `cap` previews, each with the plan's memory limits. */
+/** The previews' memory on their server: `cap` previews, each with the plan's memory limits and its own `kamal-proxy`. */
 export function previewsMemoryMb(plan: DeployPlan): number {
-  return (plan.environment?.previews?.cap ?? 0) * appMemoryMb(plan);
+  return (plan.environment?.previews?.cap ?? 0) * (appMemoryMb(plan) + KAMAL_PROXY_MEMORY_MB);
 }
 
 /**

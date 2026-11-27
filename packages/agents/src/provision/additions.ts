@@ -18,9 +18,11 @@ import {
 } from "@opscrew/core";
 import {
   additionsPath,
+  appProxyAlias,
   certbotHosts,
   EDGE_PROXIES,
   type EdgeProxy,
+  edgeAppUpstream,
   edgeProxy,
   IMAGES,
   OPENLITESPEED_CHECK,
@@ -176,6 +178,7 @@ async function runProxyChecker(
               ...["--entrypoint", "nginx", IMAGES.nginx.ref, "-t"],
             ]
           : [
+              ...["--add-host", `${appProxyAlias(app)}:127.0.0.1`],
               ...["--add-host", "kamal-proxy:127.0.0.1"],
               ...mains,
               ...mount(join(dir, "sites"), OPENLITESPEED_INPUT.sites),
@@ -266,7 +269,7 @@ export async function checkAdditions(
     proxy,
     // On this computer the site serves its .localhost hostname.
     hostnames: ctx.localhost !== undefined ? [ctx.localhost.hostname] : siteHosts(plan),
-    upstream: EDGE_PROXIES[proxy].upstream,
+    upstream: edgeAppUpstream(proxy, plan.app.name),
   });
   if (refusals.length > 0) {
     throw new OpsCrewError(

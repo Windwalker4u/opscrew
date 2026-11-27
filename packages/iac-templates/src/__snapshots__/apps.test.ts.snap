@@ -661,8 +661,8 @@ jobs:
             if [ -n "$_held" ]; then _starts=", and the app stays stopped while opscrew restore holds it"; fi
             printf 'OpsCrew restores the snapshot %s: the app'\\''s requests wait, and the app stops until its data is back.\\n' "$_id" >&2
             if [ -z "$_held" ]; then
-              trap 'edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true' EXIT
-              edge exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+              trap 'docker compose exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true; edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true' EXIT
+              docker compose exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true; edge exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
             fi
             docker compose stop app
             _saved="$(snapshot_new_id)"
@@ -697,13 +697,13 @@ jobs:
           snapshot_cmd_hold() {
             if snapshot_rotation_held 'OpsCrew changed nothing: '; then return 1; fi
             (umask 077 && mkdir -p .snapshots && : > .snapshots/.held)
-            edge exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+            docker compose exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true; edge exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
             docker compose stop app
           }
           snapshot_cmd_resume() {
             if snapshot_rotation_held 'OpsCrew changed nothing: '; then return 1; fi
             docker compose start app
-            edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true
+            docker compose exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true; edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true
             rm -f .snapshots/.held
           }
           snapshot_cmd_drill() (
@@ -1192,6 +1192,8 @@ jobs:
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
           docker compose pull
+          docker compose up -d --no-deps --wait db
+          install_edge() {
           mkdir -p "$EDGE_DIR"/sites "$EDGE_DIR"/tls
           (
             flock 9
@@ -1222,6 +1224,14 @@ jobs:
             cp edge/sites/docs.caddy "$EDGE_DIR"/sites/docs.caddy
             cp additions.caddy "$EDGE_DIR"/sites/docs.additions
             if ! edge up -d --wait --remove-orphans || ! edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
+              if [ -n "\${old:-}" ]; then
+                _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+                _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+                if [ -n "$_old_name" ]; then
+                  docker compose exec -T kamal-proxy kamal-proxy deploy docs --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+                fi
+              fi
+              if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
               if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/docs.caddy; else rm -f "$EDGE_DIR"/sites/docs.caddy; fi
               if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/docs.additions; else rm -f "$EDGE_DIR"/sites/docs.additions; fi
               for f in origin.pem origin.key pull.pem; do
@@ -1238,8 +1248,9 @@ jobs:
             rm -f "$EDGE_DIR"/sites/docs.conf
             rm -rf "$EDGE_DIR"/tls/docs
           ) 9> "$EDGE_DIR"/.lock
-          docker compose up -d --no-deps --wait db
+          }
           if [ "$MODE" = deploy ] && [ -f .move.waiting ] && [ "$(cat .move.waiting)" != copied ]; then
+            install_edge
             docker compose up --no-start --no-deps app
             printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
             echo "waiting $APP_IMAGE" > .start.outcome
@@ -1277,8 +1288,8 @@ jobs:
             saved=""
             before="$(sed -n 's/^APP_IMAGE=//p' .env)"
             (umask 077; printf 'target=%s\\nAPP_IMAGE=%s\\nsaved=%s\\nchanged=%s\\n' "$target" "$before" "$saved" 0 > .database.changed)
-            trap 'edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
-            edge exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+            trap 'docker compose exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true; edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
+            docker compose exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true; edge exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
             docker compose stop app
             parts=""
             case "$database" in
@@ -1318,6 +1329,8 @@ jobs:
             fi
           fi
           if [ "$database" = keep ]; then
+            docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+            docker compose up -d --no-deps kamal-proxy
             old="$(docker compose ps -aq app | tr '\\n' ' ')"
             docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
             new=""
@@ -1325,31 +1338,37 @@ jobs:
               case " $old " in *" $id "*) ;; *) new="$id" ;; esac
             done
             name="$(docker inspect --format '{{.Name}}' "$new")"
-            if ! edge exec -T kamal-proxy kamal-proxy deploy docs --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+            if ! docker compose exec -T kamal-proxy kamal-proxy deploy docs --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
               keep_failed app "$new" health
               echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Its last lines are kept on the server: \`opscrew logs --failed --app docs\`. Check that the app listens on port 3000 (app.port in opscrew/apps/docs/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design --app docs, opscrew adapt --app docs and opscrew provision --app docs.'
               docker rm -f "$new" > /dev/null
               exit 1
             fi
+            install_edge
             printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
             for id in $old; do
               docker stop "$id" > /dev/null
               docker rm "$id" > /dev/null
             done
+            edge exec -T kamal-proxy kamal-proxy remove docs < /dev/null > /dev/null 2>&1 || true
           else
-            trap 'edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
-            edge exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+            docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+            docker compose up -d --no-deps kamal-proxy
+            trap 'docker compose exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true; edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
+            docker compose exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true; edge exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
             printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
             docker compose up -d --no-deps --remove-orphans app
             new="$(docker compose ps -aq app)"
             name="$(docker inspect --format '{{.Name}}' "$new")"
-            if ! edge exec -T kamal-proxy kamal-proxy deploy docs --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+            if ! docker compose exec -T kamal-proxy kamal-proxy deploy docs --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
               keep_failed app "$new" health
               echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. Its last lines are kept on the server: \`opscrew logs --failed --app docs\`. Check that the app listens on port 3000 (app.port in opscrew/apps/docs/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design --app docs, opscrew adapt --app docs and opscrew provision --app docs.'
               docker rm -f "$new" > /dev/null
               exit 1
             fi
-            edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null
+            install_edge
+            docker compose exec -T kamal-proxy kamal-proxy resume docs < /dev/null
+            edge exec -T kamal-proxy kamal-proxy remove docs < /dev/null > /dev/null 2>&1 || true
           fi
           echo finished > .start.outcome
           REMOTE
@@ -1443,8 +1462,8 @@ jobs:
             APP_IMAGE="$before"
             export APP_IMAGE
             {
-              trap 'edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true' EXIT
-              edge exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+              trap 'docker compose exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true; edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true' EXIT
+              docker compose exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true; edge exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
               docker compose stop app
               if [ "$changed" = 1 ]; then
                 if [ -z "$saved" ]; then
@@ -1457,18 +1476,20 @@ jobs:
                 fi
               fi
               rm -f .database.changed
-              trap 'edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true' EXIT
-              edge exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+              docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+              docker compose up -d --no-deps kamal-proxy
+              trap 'docker compose exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true; edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true' EXIT
+              docker compose exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true; edge exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
               printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
               docker compose up -d --no-deps --remove-orphans app
               new="$(docker compose ps -aq app)"
               name="$(docker inspect --format '{{.Name}}' "$new")"
-              if ! edge exec -T kamal-proxy kamal-proxy deploy docs --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+              if ! docker compose exec -T kamal-proxy kamal-proxy deploy docs --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
                 echo '::error::The previous version did not pass its health check either.'
                 docker rm -f "$new" > /dev/null
                 exit 1
               fi
-              edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null
+              docker compose exec -T kamal-proxy kamal-proxy resume docs < /dev/null
             } >&2
             rm -f .env.previous .processes.previous
             echo "$result"
@@ -1484,6 +1505,8 @@ jobs:
           APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .env.previous)"
           export APP_IMAGE
           {
+            docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+            docker compose up -d --no-deps kamal-proxy
             old="$(docker compose ps -aq app | tr '\\n' ' ')"
             docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
             new=""
@@ -1491,7 +1514,7 @@ jobs:
               case " $old " in *" $id "*) ;; *) new="$id" ;; esac
             done
             name="$(docker inspect --format '{{.Name}}' "$new")"
-            if ! edge exec -T kamal-proxy kamal-proxy deploy docs --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+            if ! docker compose exec -T kamal-proxy kamal-proxy deploy docs --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
               echo '::error::The previous version did not pass its health check either.'
               docker rm -f "$new" > /dev/null
               exit 1

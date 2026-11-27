@@ -138,7 +138,11 @@ export async function readServerContainers(
       ).facts;
     return facts.containers
       .filter((container) => container.project === app)
-      .map(({ name, running }) => ({ name, running }));
+      .map(({ name, running, networks }) => ({
+        name,
+        running,
+        ...(networks !== undefined ? { networks } : {}),
+      }));
   }
   const address = await serverAddress(deps, plan);
   if (address === undefined) {

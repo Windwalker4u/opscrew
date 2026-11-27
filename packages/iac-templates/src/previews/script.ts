@@ -396,6 +396,7 @@ up_preview() {
     why="$(failed_step)"
     (cd "$P" && OPSCREW_APPS_DIR="$APPS_DIR" OPSCREW_EDGE_DIR="$EDGE_DIR" sh ./rollback.sh "$image" < /dev/null >> up.log 2>&1) || true
     if [ -z "$previous" ]; then
+      (cd "$P" && docker compose exec -T kamal-proxy kamal-proxy remove "$NAME" < /dev/null >> up.log 2>&1) || true
       edge exec -T kamal-proxy kamal-proxy remove "$NAME" >> "$P/up.log" 2>&1 || true
       rm -f "$P/.env"
     fi
@@ -421,7 +422,6 @@ up_preview() {
 remove() {
   rm -f "$P/.preview" "$P/.seeded"
   step=edge
-  edge exec -T kamal-proxy kamal-proxy remove "$NAME" > /dev/null 2>&1 || true
   if [ -f "$EDGE_DIR/sites/$NAME.caddy" ]; then
     exec 9> "$EDGE_DIR/.lock"
     flock -w 600 9 || finish busy 600 6
@@ -429,6 +429,7 @@ remove() {
     edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile > /dev/null 2>&1 || true
     exec 9>&-
   fi
+  edge exec -T kamal-proxy kamal-proxy remove "$NAME" > /dev/null 2>&1 || true
   step=start
   label="label=com.docker.compose.project=$NAME"
   ids="$(docker ps -aq --filter "$label" 2> /dev/null)"

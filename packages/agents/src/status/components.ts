@@ -1,6 +1,11 @@
 import type { RemoteExec } from "@opscrew/contracts";
-import { OpsCrewError, upperFirst } from "@opscrew/core";
-import { hostSettingsServices, serviceSpec } from "@opscrew/iac-templates";
+import { listText, OpsCrewError, upperFirst } from "@opscrew/core";
+import {
+  APP_KAMAL_PROXY_SERVICE,
+  EDGE_PROJECT,
+  hostSettingsServices,
+  serviceSpec,
+} from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, poolerName, postgresPooler } from "@opscrew/plan-schema";
 import { hasExtraServers } from "../shared/servers";
 
@@ -60,10 +65,12 @@ export function onServer(plan: Pick<DeployPlan, "servers">, server: string): str
   return hasExtraServers(plan) ? ` on server ${server}` : "";
 }
 
-/** One container of the app's Compose project: its name and whether it runs. */
+/** One container of the app's Compose project: its name, whether it runs, and its Docker networks. */
 export interface AppContainer {
   name: string;
   running: boolean;
+  /** Docker networks the container is attached to, when read from `docker ps`. */
+  networks?: readonly string[];
 }
 
 /**
@@ -94,12 +101,24 @@ export interface ComponentStatus {
   components: ComponentState[];
   /** The app's Compose services on the server that are no component of the plan, sorted. */
   others: string[];
+  /**
+   * Non-proxy services of the app still attached to the shared `opscrew-edge` network (present
+   * only when any are found; fixed by the next deploy).
+   */
+  onEdgeNetwork?: string[];
+  /**
+   * True when the app runs on its server without a running per-app `kamal-proxy` container
+   * (present only when true).
+   */
+  missingAppProxy?: boolean;
 }
 
 /** One container of the app's Compose project, by its Compose service. */
 export interface ServiceContainer {
   service: string;
   running: boolean;
+  /** Docker networks the container is attached to, when read from `docker ps`. */
+  networks?: readonly string[];
 }
 
 /** The app's containers `containers` by their Compose service, one-off containers left out. */
@@ -107,9 +126,11 @@ export function serviceContainers(
   app: string,
   containers: readonly AppContainer[],
 ): ServiceContainer[] {
-  return containers.flatMap(({ name, running }) => {
+  return containers.flatMap(({ name, running, networks }) => {
     const service = containerService(app, name);
-    return service === undefined ? [] : [{ service, running }];
+    return service === undefined
+      ? []
+      : [{ service, running, ...(networks !== undefined ? { networks } : {}) }];
   });
 }
 
@@ -120,11 +141,19 @@ export function componentStatus(
   server = APP_SERVER,
 ): ComponentStatus {
   const counts = new Map<string, { containers: number; running: number }>();
-  for (const { service, ...container } of containers) {
+  const onEdge = new Set<string>();
+  let hasNetworkFacts = false;
+  for (const { service, running, networks } of containers) {
     const count = counts.get(service) ?? { containers: 0, running: 0 };
     count.containers += 1;
-    if (container.running) count.running += 1;
+    if (running) count.running += 1;
     counts.set(service, count);
+    if (networks !== undefined && networks.length > 0) {
+      hasNetworkFacts = true;
+      if (service !== APP_KAMAL_PROXY_SERVICE && networks.includes(EDGE_PROJECT)) {
+        onEdge.add(service);
+      }
+    }
   }
   const components = componentsOn(plan, server).map((component) => ({
     ...component,
@@ -132,10 +161,29 @@ export function componentStatus(
   }));
   const planned = new Set(components.map((component) => component.service));
   const oneShot = oneShotServices(plan);
+  const expectsAppProxy = server === APP_SERVER && plan.target.provider !== "portainer";
   const others = [...counts.keys()]
-    .filter((service) => !planned.has(service) && !oneShot.has(service))
+    .filter(
+      (service) =>
+        !planned.has(service) &&
+        !oneShot.has(service) &&
+        !(expectsAppProxy && service === APP_KAMAL_PROXY_SERVICE),
+    )
     .sort();
-  return { components, others };
+  const onEdgeNetwork = [...onEdge].sort();
+  const proxyCount = counts.get(APP_KAMAL_PROXY_SERVICE);
+  const appPresent = (counts.get("app")?.containers ?? 0) > 0;
+  const missingAppProxy =
+    expectsAppProxy &&
+    appPresent &&
+    ((proxyCount !== undefined && proxyCount.running === 0) ||
+      (hasNetworkFacts && (proxyCount?.running ?? 0) === 0));
+  return {
+    components,
+    others,
+    ...(onEdgeNetwork.length > 0 ? { onEdgeNetwork } : {}),
+    ...(missingAppProxy ? { missingAppProxy: true } : {}),
+  };
 }
 
 /** Whether a component runs, in words. */
@@ -176,6 +224,16 @@ export function componentStatusLines(
       (service) =>
         `  ${service}: on ${on === "" ? "the server" : `server ${server}`}, but no component in opscrew/plan.yaml ${on === "" ? "" : "there "}any more (the next deploy removes it)`,
     ),
+    ...(status.onEdgeNetwork !== undefined && status.onEdgeNetwork.length > 0
+      ? [
+          `  Isolation: ${listText(status.onEdgeNetwork)} ${status.onEdgeNetwork.length === 1 ? "is" : "are"} still on the shared edge network (${EDGE_PROJECT}); re-run the deploy workflow to isolate the app behind its own proxy`,
+        ]
+      : []),
+    ...(status.missingAppProxy === true
+      ? [
+          `  Proxy (${APP_KAMAL_PROXY_SERVICE}): not running; re-run the deploy workflow to start the app's proxy`,
+        ]
+      : []),
   ];
 }
 
@@ -189,7 +247,7 @@ export const CONTAINER_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
  */
 export async function readAppContainers(remote: RemoteExec, app: string): Promise<AppContainer[]> {
   const result = await remote.run(
-    `docker ps -a --filter label=com.docker.compose.project=${app} --filter label=com.docker.compose.oneoff=False --format '{{.Names}}|{{.State}}'`,
+    `docker ps -a --filter label=com.docker.compose.project=${app} --filter label=com.docker.compose.oneoff=False --format '{{.Names}}|{{.State}}|{{.Networks}}'`,
     { timeoutMs: 30_000 },
   );
   if (result.exitCode !== 0) {
@@ -202,9 +260,17 @@ export async function readAppContainers(remote: RemoteExec, app: string): Promis
     );
   }
   return result.stdout.split(/\r?\n/).flatMap((line) => {
-    const [name, state] = line.trim().split("|");
-    return name !== undefined && CONTAINER_NAME.test(name)
-      ? [{ name, running: state === "running" }]
-      : [];
+    const [name, state, networksRaw] = line.trim().split("|");
+    if (name === undefined || !CONTAINER_NAME.test(name)) return [];
+    const networks =
+      networksRaw === undefined
+        ? undefined
+        : networksRaw
+            .split(",")
+            .map((network) => network.trim())
+            .filter((network) => network !== "");
+    return [
+      { name, running: state === "running", ...(networks !== undefined ? { networks } : {}) },
+    ];
   });
 }

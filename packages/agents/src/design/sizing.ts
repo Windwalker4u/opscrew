@@ -5,6 +5,7 @@ import {
   DRAGONFLY_MIN_VCPUS,
   type EdgeProxy,
   edgeMemoryMb,
+  KAMAL_PROXY_MEMORY_MB,
   serviceSpec,
 } from "@opscrew/iac-templates";
 import type {
@@ -67,10 +68,11 @@ export interface Sizing {
 
 /**
  * A preview server's sizing ({@link sizeFor}'s for one preview): `cap` previews, each with the
- * memory limits of the app and its services, next to the edge and the system's reserve.
+ * memory limits of the app, its services and its own `kamal-proxy` (the first preview's proxy is
+ * already counted in `edgeMb`), next to the edge and the system's reserve.
  */
 export function previewSizing(sizing: Sizing, cap: number): Sizing {
-  const limitsMb = sizing.limitsMb * cap;
+  const limitsMb = sizing.limitsMb * cap + KAMAL_PROXY_MEMORY_MB * Math.max(0, cap - 1);
   return {
     ...sizing,
     limitsMb,
@@ -199,11 +201,20 @@ export interface ServerApp {
   memoryMb: number;
   /** It runs a Cloudflare Tunnel connector of its own. */
   tunnel: boolean;
+  /**
+   * It runs a per-app `kamal-proxy` of its own (default true when the server runs an edge; false
+   * for synthetic entries such as shared previews whose `memoryMb` already counts each proxy).
+   */
+  proxy?: boolean;
 }
 
-/** An app's memory on the server: its limits, and its tunnel connector's. */
-function serverAppMb(app: ServerApp): number {
-  return app.memoryMb + (app.tunnel ? CONNECTOR_MEMORY_MB : 0);
+/** An app's memory on the server: its limits, its per-app proxy (with an edge) and its tunnel connector's. */
+function serverAppMb(app: ServerApp, withProxy: boolean): number {
+  return (
+    app.memoryMb +
+    (withProxy && app.proxy !== false ? KAMAL_PROXY_MEMORY_MB : 0) +
+    (app.tunnel ? CONNECTOR_MEMORY_MB : 0)
+  );
 }
 
 /**
@@ -229,13 +240,17 @@ export function ownServerMemory(
   wording?: { again: string } | { server: string; hint: string },
 ): { refused?: { message: string; hint: string }; warning?: string } | undefined {
   if (serverMb < 100) return undefined;
-  const othersMb = others.reduce((sum, app) => sum + serverAppMb(app), 0);
+  const withProxy = edgeMb > 0;
+  const othersMb = others.reduce((sum, app) => sum + serverAppMb(app, withProxy), 0);
   const headroom = memoryHeadroom(serverMb, appMb + othersMb, edgeMb);
   if (!headroom.low) return undefined;
   const each = listText(
-    others.map(
-      (app) =>
-        `"${app.name}" ${app.memoryMb} MB${app.tunnel ? ` and ${CONNECTOR_MEMORY_MB} MB for its tunnel connector` : ""}`,
+    others.map((app) =>
+      listText([
+        `"${app.name}" ${app.memoryMb} MB`,
+        ...(withProxy && app.proxy !== false ? [`${KAMAL_PROXY_MEMORY_MB} MB for its proxy`] : []),
+        ...(app.tunnel ? [`${CONNECTOR_MEMORY_MB} MB for its tunnel connector`] : []),
+      ]),
     ),
   );
   const server = Math.round(serverMb);

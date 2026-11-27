@@ -9,6 +9,7 @@ import { detectProjectDetails } from "@opscrew/detect";
 import {
   additionsPath,
   EDGE_PROXIES,
+  edgeAppUpstream,
   edgeProxy,
   siteHosts,
   translateVercelRouting,
@@ -48,7 +49,8 @@ export async function vercelAdditions(
   const none = { lines: [], warnings: [] };
   if (plan.target.provider === "portainer") return none;
   const proxy = edgeProxy(plan);
-  const { label, upstream } = EDGE_PROXIES[proxy];
+  const { label } = EDGE_PROXIES[proxy];
+  const upstream = edgeAppUpstream(proxy, plan.app.name);
   const file = additionsPath(plan, proxy);
   const path = join(root, file);
   const existing = await readTextIfExists(path);

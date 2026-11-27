@@ -109,10 +109,29 @@ services:
       - ALL
     networks:
       - internal
-      - opscrew-edge
     depends_on:
       cache:
         condition: service_healthy
+  kamal-proxy:
+    image: <pin:IMAGES.kamalProxy>
+    restart: unless-stopped
+    volumes:
+      - kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy
+    mem_limit: 32m
+    memswap_limit: 32m
+    security_opt: *a1
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    cap_drop:
+      - ALL
+    networks:
+      internal: {}
+      opscrew-edge:
+        aliases:
+          - shop-kamal-proxy
   worker:
     image: \${APP_IMAGE:?APP_IMAGE is not set; deploy with the OpsCrew workflow}
     restart: unless-stopped
@@ -207,6 +226,8 @@ networks:
   internal: {}
   opscrew-edge:
     external: true
+volumes:
+  kamal-proxy-config: {}
 "
 `;
 
@@ -236,12 +257,31 @@ services:
       - ALL
     networks:
       - internal
-      - opscrew-edge
     depends_on:
       db:
         condition: service_healthy
       cache:
         condition: service_healthy
+  kamal-proxy:
+    image: <pin:IMAGES.kamalProxy>
+    restart: unless-stopped
+    volumes:
+      - kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy
+    mem_limit: 32m
+    memswap_limit: 32m
+    security_opt: *a1
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    cap_drop:
+      - ALL
+    networks:
+      internal: {}
+      opscrew-edge:
+        aliases:
+          - shop-kamal-proxy
   db:
     image: <pin:IMAGES.postgres>
     restart: unless-stopped
@@ -300,5 +340,7 @@ networks:
   internal: {}
   opscrew-edge:
     external: true
+volumes:
+  kamal-proxy-config: {}
 "
 `;

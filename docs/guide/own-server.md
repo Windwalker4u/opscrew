@@ -203,15 +203,20 @@ You can deploy several OpsCrew apps, from different repositories, to the same se
 up by its own `npx opscrew provision`, and they share only what must be shared:
 
 - **Each app has its own** Docker Compose project, named after the app, in `/srv/apps/<app>`, its
-  data in `/srv/data/<app>`, its deploy key, its record in `/etc/opscrew/apps/<app>.json`, its
-  components with their memory limits, and, with the Cloudflare Tunnel, its own tunnel and tunnel
-  connector (the Compose project `<app>-tunnel`).
-- **The edge is shared:** the server's proxy ([Caddy](https://caddyserver.com/), or [nginx](https://nginx.org/) with [certbot](https://certbot.eff.org/); see
-  [the reverse proxy](reverse-proxy.md)) and [kamal-proxy](https://github.com/basecamp/kamal-proxy) in `/srv/edge` (the Compose project
-  `opscrew-edge`) serve every app, each on its own hostnames, with one site file per app in
-  `/srv/edge/sites/`. Each deploy brings the edge's files along and keeps the newer
-  version, so a deploy never downgrades it, and only a changed edge is
-  restarted.
+  own private `internal` Docker network and its own [kamal-proxy](https://github.com/basecamp/kamal-proxy)
+  container (32 MB), its data in `/srv/data/<app>`, its deploy key, its record in
+  `/etc/opscrew/apps/<app>.json`, its components with their memory limits, and, with the Cloudflare
+  Tunnel, its own tunnel and tunnel connector (the Compose project `<app>-tunnel`). Because each
+  app's containers join only its own `internal` network, a compromised container in one app cannot
+  connect to another app's containers directly, cannot reach the front proxy on `opscrew-edge`, and
+  cannot route to another app or forge `X-Forwarded-*` headers through its own `kamal-proxy`.
+- **The front proxy is shared:** the server's reverse proxy ([Caddy](https://caddyserver.com/),
+  [nginx](https://nginx.org/) with [certbot](https://certbot.eff.org/), or
+  [OpenLiteSpeed](https://openlitespeed.org/); see [the reverse proxy](reverse-proxy.md)) in
+  `/srv/edge` (the Compose project `opscrew-edge`) serves every app on its own hostnames, with one
+  site file per app in `/srv/edge/sites/` forwarding to that app's own `kamal-proxy`. Each deploy
+  brings the edge's files along and keeps the newer version, so a deploy never downgrades it, and
+  only a changed edge is restarted.
 - **The server's setup is shared:** Docker, the `deploy` user, SSH, the firewall, fail2ban and
   automatic updates. A later app's host plan finds them in place and changes nothing there.
 
@@ -230,10 +235,10 @@ Before any change, OpsCrew refuses an app when:
   switched while it holds only one OpsCrew app.
 
 Design checks the memory: the server's memory, minus the memory limits of the apps already there
-and their tunnel connectors, OpsCrew's edge (128 MB) and the system (384 MB), must hold the new
-app's components. It warns when less than 15% stays free. Provision runs the same check before it
-plans anything, so a memory limit raised by hand in the plan that no longer fits beside the other
-apps is refused before any change.
+(including 32 MB for each additional app's `kamal-proxy` and any tunnel connectors), OpsCrew's edge
+(128 MB on Caddy) and the system (384 MB), must hold the new app's components. It warns when less
+than 15% stays free. Provision runs the same check before it plans anything, so a memory limit
+raised by hand in the plan that no longer fits beside the other apps is refused before any change.
 
 All apps on the server run as the same `deploy` user, who can become root through Docker. So
 whoever can change one app's deploy workflow or deploy key can reach the other apps' data and

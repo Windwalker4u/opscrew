@@ -102,8 +102,12 @@ describe("the deploy on the nginx edge", () => {
 
   it("reloads nginx with nginx -t first, and puts the previous site back when it refuses the new one", () => {
     const part = edgePart(dnsOnly, ctx);
-    expect(part).toContain(
-      `  if ! edge up -d --wait --remove-orphans || ! edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null; then\n    if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.conf; else rm -f "$EDGE_DIR"/sites/shop.conf; fi\n`,
+    const failedReload =
+      "  if ! edge up -d --wait --remove-orphans || ! edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null; then\n";
+    expect(part).toContain(failedReload);
+    const afterFailed = part.slice(part.indexOf(failedReload));
+    expect(afterFailed).toContain(
+      '    if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.conf; else rm -f "$EDGE_DIR"/sites/shop.conf; fi\n',
     );
     expect(part).toContain(
       `nginx and kamal-proxy, in '"$EDGE_DIR"') did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.conf)`,

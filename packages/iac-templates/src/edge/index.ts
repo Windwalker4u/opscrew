@@ -90,8 +90,36 @@ export const EDGE_VERSION_KEY = "x-opscrew-edge-version";
 /** The key of the edge's proxy (`caddy`, `nginx` or `openlitespeed`) in its Compose file, after its version. */
 export const EDGE_PROXY_KEY = "x-opscrew-edge-proxy";
 
-/** Where Caddy sends every app's traffic: kamal-proxy, which routes by hostname to the app's copy. */
+/** Where the legacy shared edge's kamal-proxy listens; kept for mixed-version transitions (049). */
 export const EDGE_UPSTREAM = "kamal-proxy:80";
+
+/** The per-app kamal-proxy Compose service name inside each app's Compose project (049). */
+export const APP_KAMAL_PROXY_SERVICE = "kamal-proxy";
+
+/**
+ * The per-app kamal-proxy's DNS alias on `opscrew-edge`: `<app>-kamal-proxy`. Only this container
+ * bridges the app's private `internal` network and `opscrew-edge` (049).
+ */
+export function appProxyAlias(app: string): string {
+  return `${app}-kamal-proxy`;
+}
+
+/** The per-app kamal-proxy upstream address on `opscrew-edge`: `<app>-kamal-proxy:80` (049). */
+export function appProxyUpstream(app: string): string {
+  return `${appProxyAlias(app)}:80`;
+}
+
+/**
+ * The upstream name an app's proxy site and user additions target for `proxy`:
+ * `<app>-kamal-proxy:80` on Caddy, `<app>-kamal-proxy` (the site's own `upstream` group) on nginx,
+ * and `kamal-proxy` (the virtual host's own `extprocessor`, pointing at `<app>-kamal-proxy:80`) on
+ * OpenLiteSpeed.
+ */
+export function edgeAppUpstream(proxy: EdgeProxy, app: string): string {
+  if (proxy === "caddy") return appProxyUpstream(app);
+  if (proxy === "nginx") return appProxyAlias(app);
+  return OPENLITESPEED_UPSTREAM;
+}
 
 /**
  * The port of Caddy's metrics site on every Caddy edge: on the edge's internal network only, never
@@ -150,7 +178,7 @@ export function otherProxies(proxy: EdgeProxy): EdgeProxy[] {
 
 /** The memory limits of the edge's containers, in MB. */
 export const CADDY_MEMORY_MB = 64;
-const KAMAL_PROXY_MEMORY_MB = 32;
+export const KAMAL_PROXY_MEMORY_MB = 32;
 const NGINX_MEMORY_MB = 64;
 /** OpenLiteSpeed idles at 11 MB and buffers up to 60 MB of request bodies in memory (`inMemBufSize`). */
 const OPENLITESPEED_MEMORY_MB = 128;

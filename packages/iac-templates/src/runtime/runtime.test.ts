@@ -69,16 +69,20 @@ describe("renderCompose", () => {
     expect(file.path).toBe("opscrew/runtime/compose.yaml");
     const doc = parse(file.content);
     expect(doc.name).toBe("shop");
-    expect(Object.keys(doc.services)).toEqual(["app", "db", "cache"]);
-    for (const name of ["app", "db", "cache"]) {
+    expect(Object.keys(doc.services)).toEqual(["app", "kamal-proxy", "db", "cache"]);
+    for (const name of ["app", "kamal-proxy", "db", "cache"]) {
       expect(doc.services[name].ports).toBeUndefined();
     }
-    expect(file.content).not.toMatch(/caddy|kamal-proxy|Caddyfile/);
-    // Only the web service joins the shared edge's network, where kamal-proxy reaches it.
-    expect(doc.services.app.networks).toEqual(["internal", "opscrew-edge"]);
+    expect(file.content).not.toMatch(/caddy|Caddyfile/);
+    // Only the app's own kamal-proxy joins the shared edge's network; the app stays on internal.
+    expect(doc.services.app.networks).toEqual(["internal"]);
+    expect(doc.services["kamal-proxy"].networks).toEqual({
+      internal: {},
+      "opscrew-edge": { aliases: ["shop-kamal-proxy"] },
+    });
     expect(doc.services.db.networks).toEqual(["internal"]);
     expect(doc.networks).toEqual({ internal: {}, "opscrew-edge": { external: true } });
-    expect(doc.volumes).toBeUndefined();
+    expect(doc.volumes).toEqual({ "kamal-proxy-config": {} });
     expect(file.content).toContain(
       "# The deploy workflow copies it to /srv/apps/shop on the server.",
     );
@@ -95,13 +99,13 @@ describe("renderCompose", () => {
 
   it("omits the database and cache when the plan does not self-host them", () => {
     const doc = parse(renderCompose(plan({ postgres: false })).content);
-    expect(Object.keys(doc.services)).toEqual(["app"]);
+    expect(Object.keys(doc.services)).toEqual(["app", "kamal-proxy"]);
     expect(doc.services.app.depends_on).toBeUndefined();
   });
 
   it("rotates every service's logs itself and keeps no-new-privileges (Docker's daemon settings stay as they are)", () => {
     const doc = parse(renderCompose(plan({ redis: true, release: "migrate" })).content);
-    expect(Object.keys(doc.services)).toEqual(["app", "release", "db", "cache"]);
+    expect(Object.keys(doc.services)).toEqual(["app", "kamal-proxy", "release", "db", "cache"]);
     for (const service of Object.values<Record<string, unknown>>(doc.services)) {
       expect(service.logging).toEqual({
         driver: "json-file",
@@ -119,7 +123,7 @@ describe("renderCompose", () => {
     const command = "python manage.py migrate --noinput && echo $HOME ${X}";
     const file = renderCompose(plan({ redis: true, release: command }));
     const doc = parse(file.content);
-    expect(Object.keys(doc.services)).toEqual(["app", "release", "db", "cache"]);
+    expect(Object.keys(doc.services)).toEqual(["app", "kamal-proxy", "release", "db", "cache"]);
     const { app, release } = doc.services;
     expect(release.image).toBe(app.image);
     expect(release.env_file).toEqual(app.env_file);
@@ -192,7 +196,14 @@ describe("renderCompose", () => {
     const seed = "npm run seed -- --name $USER";
     const file = renderCompose(p, { seed });
     const doc = parse(file.content);
-    expect(Object.keys(doc.services)).toEqual(["app", "release", "seed", "db", "cache"]);
+    expect(Object.keys(doc.services)).toEqual([
+      "app",
+      "kamal-proxy",
+      "release",
+      "seed",
+      "db",
+      "cache",
+    ]);
     const { release } = doc.services;
     // The release service's image, env files, environment, user, volumes, limits and network.
     expect(doc.services.seed).toEqual({
@@ -254,7 +265,7 @@ describe("renderCaddyfile (the app's site on the shared edge)", () => {
       "\nwww.example.com {\n\ttls ops@example.com\n\tredir https://example.com{uri} 308\n}",
     );
     expect(content).toContain("\ttls ops@example.com\n");
-    expect(content).toContain("reverse_proxy kamal-proxy:80");
+    expect(content).toContain("reverse_proxy shop-kamal-proxy:80");
     expect(content).toContain("Strict-Transport-Security");
     expect(content).toMatchSnapshot();
   });
@@ -262,7 +273,7 @@ describe("renderCaddyfile (the app's site on the shared edge)", () => {
   it("serves plain HTTP on the IP without HSTS before a domain exists", () => {
     const content = renderCaddyfile(plan({ port: 8080 }), ctx).content;
     expect(content).toContain(":80 {");
-    expect(content).toContain("reverse_proxy kamal-proxy:80");
+    expect(content).toContain("reverse_proxy shop-kamal-proxy:80");
     expect(content).not.toContain("Strict-Transport-Security");
     expect(content).not.toContain("tls ");
   });
@@ -403,7 +414,7 @@ describe("the switch between app copies", () => {
       testContext(),
     ).content;
     for (const content of [direct, tunnel]) {
-      expect(content).toContain("\treverse_proxy kamal-proxy:80\n");
+      expect(content).toContain("\treverse_proxy shop-kamal-proxy:80\n");
       expect(content).not.toContain("app:3000");
     }
   });
@@ -420,6 +431,7 @@ describe("image pins", () => {
       .filter(([name]) => name !== "app" && name !== "release")
       .map(([, service]) => (service as { image: string }).image);
     expect(images).toEqual([
+      IMAGES.kamalProxy.ref,
       IMAGES.postgres.ref,
       IMAGES.valkey.ref,
       IMAGES.kamalProxy.ref,

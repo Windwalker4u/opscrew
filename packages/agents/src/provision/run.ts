@@ -18,6 +18,7 @@ import {
   edgeMemoryMb,
   edgeProxy,
   homeMode,
+  KAMAL_PROXY_MEMORY_MB,
   previewRecipeDir,
   renderBackups,
   renderCloudInit,
@@ -2059,7 +2060,7 @@ async function requireRoomForOtherApps(
   ).catalog.listOffers();
   const memoryGb = offers.find((offer) => offer.id === resizeTo)?.memoryGb;
   const appMb = appMemoryMb(plan);
-  const othersMb = active.reduce((sum, record) => sum + record.memoryMb, 0);
+  const othersMb = active.reduce((sum, record) => sum + record.memoryMb + KAMAL_PROXY_MEMORY_MB, 0);
   const edgeMb = edgeMemoryMb(edgeProxy(plan));
   const needMb = appMb + othersMb + edgeMb + SYSTEM_RESERVE_MB;
   const instead = `Pick a server type with at least ${needMb} MB of memory with \`opscrew design\`, lower the memory limits in opscrew/plan.yaml, or remove an app from the server; then run \`${again}\` again.`;
@@ -2072,7 +2073,12 @@ async function requireRoomForOtherApps(
   }
   const serverMb = Math.round(memoryGb * 1024);
   if (!memoryHeadroom(serverMb, appMb + othersMb, edgeMb).fits) {
-    const each = listText(active.map((record) => `"${record.app}" ${record.memoryMb} MB`));
+    const each = listText(
+      active.map(
+        (record) =>
+          `"${record.app}" ${record.memoryMb} MB and ${KAMAL_PROXY_MEMORY_MB} MB for its proxy`,
+      ),
+    );
     throw refusedBeforeChange(
       "PHASE_PRECONDITION",
       `${resizeTo} has ${serverMb} MB of memory. After ${SYSTEM_RESERVE_MB} MB for the system and ${edgeMb} MB for OpsCrew's edge, it doesn't hold this app's ${appMb} MB of memory limits beside the ${othersMb} MB of the other ${one ? "app" : "apps"} on the server (${each}).`,

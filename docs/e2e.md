@@ -270,8 +270,9 @@ The checks, in order:
    - `opscrew status` shows every component of the plan running;
    - every container of the app's Compose project and of the shared edge (`opscrew-edge`) has a
      memory limit, and no swap beyond it;
-   - no container publishes a port but the edge's Caddy, and the app's containers are on the
-     edge's network: Caddy reaches the app through kamal-proxy;
+   - no container publishes a port but the edge's Caddy, the app's own containers stay on its
+     private `internal` network, and only its per-app `kamal-proxy` joins `opscrew-edge` so Caddy
+     reaches the app through `<app>-kamal-proxy:80`;
    - every component and the edge run, none restarted and none met its limit;
    - each data folder `/srv/data/<app>/<service>` holds data and belongs to the user its service
      runs as (the owner of its main process). The folder is read as root in a throwaway container

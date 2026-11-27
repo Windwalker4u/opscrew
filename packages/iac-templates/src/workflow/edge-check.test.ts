@@ -106,7 +106,7 @@ describe("the deploy job's check of the edge with the proxy's own checker", () =
     expect(step.name).toBe("Validate the edge's configuration with OpenLiteSpeed");
     const run = step.run ?? "";
     // kamal-proxy's name resolves in the check's own container, which starts nothing else.
-    const olsCheck = `if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T -v "$RUNNER_TEMP/opscrew-edge"/letsencrypt:/etc/letsencrypt:ro --entrypoint sh openlitespeed -c 'printf "127.0.0.1 kamal-proxy\\n" >> /etc/hosts && sh /etc/opscrew/check.sh' < /dev/null; then\n`;
+    const olsCheck = `if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T -v "$RUNNER_TEMP/opscrew-edge"/letsencrypt:/etc/letsencrypt:ro --entrypoint sh openlitespeed -c 'printf "127.0.0.1 shop-kamal-proxy kamal-proxy\\n" >> /etc/hosts && sh /etc/opscrew/check.sh' < /dev/null; then\n`;
     expect(run.split(olsCheck)).toHaveLength(3);
     const at = (text: string) => run.indexOf(text);
     // The virtual host and its hostnames once, then each configuration in turn.

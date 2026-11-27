@@ -180,18 +180,24 @@ describe("services", () => {
 });
 
 describe("app health", () => {
-  it("asks the app from a one-off container of the edge's proxy on the Compose network", async () => {
+  it("asks the app from a one-off container on the app's internal network using the server's pinned edge image", async () => {
     const remote = new FakeRemote("h");
-    expect(await isAppHealthy(remote, 3000, "/healthz", "caddy")).toBe(true);
+    expect(await isAppHealthy(remote, 3000, "/healthz", "caddy", "shop")).toBe(true);
     // nginx's image is Alpine, with busybox wget too; OpenLiteSpeed's Ubuntu has GNU wget.
-    expect(await isAppHealthy(remote, 3000, "/healthz", "nginx")).toBe(true);
-    expect(await isAppHealthy(remote, 3000, "/healthz", "openlitespeed")).toBe(true);
-    expect(remote.calls).toEqual(
-      ["caddy", "nginx", "openlitespeed"].map((proxy) => ({
-        command: `cd /srv/edge && docker compose run --rm --no-deps -T --entrypoint wget ${proxy} -q -O /dev/null -T 5 'http://app:3000/healthz'`,
-        timeoutMs: MIN,
-      })),
-    );
+    expect(await isAppHealthy(remote, 3000, "/healthz", "nginx", "shop")).toBe(true);
+    expect(await isAppHealthy(remote, 3000, "/healthz", "openlitespeed", "shop")).toBe(true);
+    expect(remote.calls).toHaveLength(3);
+    for (const [i, proxy] of (["caddy", "nginx", "openlitespeed"] as const).entries()) {
+      const call = remote.calls[i];
+      expect(call?.timeoutMs).toBe(MIN);
+      expect(call?.command).toContain(
+        "docker ps --filter label=com.docker.compose.project=shop --filter label=com.docker.compose.service=app --format '{{.Names}}' | head -n 1",
+      );
+      expect(call?.command).toContain(`/srv/edge/compose.yaml`);
+      expect(call?.command).toContain(`--pull never --network shop_internal --entrypoint wget`);
+      expect(call?.command).toContain(`'  ${proxy}:'`);
+      expect(call?.command).toContain(`"http://$name:3000/healthz"`);
+    }
   });
 
   it("asks the app's web container Compose runs, whatever its number (a rolling deploy's shop-app-2)", async () => {
@@ -205,8 +211,8 @@ describe("app health", () => {
         : ok(),
     );
     expect(await isAppHealthy(remote, 3000, "/healthz", "caddy", "shop")).toBe(true);
-    expect(remote.calls[0]?.command).toBe(
-      `name="$(docker ps --filter label=com.docker.compose.project=shop --filter label=com.docker.compose.service=app --format '{{.Names}}' | head -n 1)" && { [ -n "$name" ] || { echo 'no app container runs' >&2; exit 1; }; } && cd /srv/edge && docker compose run --rm --no-deps -T --entrypoint wget caddy -q -O /dev/null -T 5 "http://$name:3000/healthz"`,
+    expect(remote.calls[0]?.command).toContain(
+      `--pull never --network shop_internal --entrypoint wget`,
     );
     const late = await caught(
       waitAppHealthy(new FakeRemote("h", () => fail("no app container runs")), 3000, "/up", {
@@ -228,7 +234,13 @@ describe("app health", () => {
 
   it("is false on a failed check, a timeout or a connection error", async () => {
     expect(
-      await isAppHealthy(new FakeRemote("h", () => fail("wget: bad address")), 80, "/", "caddy"),
+      await isAppHealthy(
+        new FakeRemote("h", () => fail("wget: bad address")),
+        80,
+        "/",
+        "caddy",
+        "shop",
+      ),
     ).toBe(false);
     expect(
       await isAppHealthy(
@@ -236,6 +248,7 @@ describe("app health", () => {
         80,
         "/",
         "caddy",
+        "shop",
       ),
     ).toBe(false);
     expect(
@@ -246,6 +259,7 @@ describe("app health", () => {
         80,
         "/",
         "caddy",
+        "shop",
       ),
     ).toBe(false);
   });
@@ -253,7 +267,7 @@ describe("app health", () => {
   it("refuses paths that are not safe to put in the command", async () => {
     const remote = new FakeRemote("h");
     for (const path of ["health", "/'; reboot; '", "/a b", "/$(id)", "/`id`"]) {
-      const error = await caught(isAppHealthy(remote, 3000, path, "caddy"));
+      const error = await caught(isAppHealthy(remote, 3000, path, "caddy", "shop"));
       expect(error.code).toBe("INVALID_INPUT");
     }
     expect(remote.calls).toEqual([]);
@@ -267,6 +281,7 @@ describe("app health", () => {
     await waitAppHealthy(remote, 8080, "/up", {
       redact: identity,
       folder: FOLDER,
+      app: "shop",
       edge: "caddy",
       now: () => t,
       sleep: async (ms) => {
@@ -286,6 +301,7 @@ describe("app health", () => {
       waitAppHealthy(remote, 3000, "/health", {
         redact: (text) => text.split(token).join("[redacted]"),
         folder: FOLDER,
+        app: "shop",
         edge: "caddy",
         timeoutMs: 60_000,
         intervalMs: 10_000,

@@ -338,7 +338,7 @@ describe("the app's site file", () => {
     expect(site.content).toContain(
       "\nwww.example.com {\n\ttls ops@example.com\n\tredir https://example.com{uri} 308\n}\n",
     );
-    expect(site.content).toContain("\treverse_proxy kamal-proxy:80\n");
+    expect(site.content).toContain("\treverse_proxy shop-kamal-proxy:80\n");
     expect(site.content).toContain("Strict-Transport-Security");
     // An imported file cannot have global options, so the email is the site's.
     expect(site.content).not.toContain("email ops@example.com");
@@ -433,9 +433,9 @@ describe("the visitor's address behind Cloudflare's proxy, on Caddy", () => {
     const withRanges = { ...ctx, cloudflareRanges: ranges };
     const content = site(shop, withRanges);
     expect(content).toContain(
-      "\treverse_proxy kamal-proxy:80 {\n\t\theader_up X-Forwarded-For {client_ip}\n\t}\n",
+      "\treverse_proxy shop-kamal-proxy:80 {\n\t\theader_up X-Forwarded-For {client_ip}\n\t}\n",
     );
-    expect(content).not.toMatch(/\treverse_proxy kamal-proxy:80\n/);
+    expect(content).not.toMatch(/\treverse_proxy shop-kamal-proxy:80\n/);
     // An app Cloudflare does not proxy, or behind a tunnel, keeps today's site.
     const dnsOnly = DeployPlanSchema.parse({ ...blog, dns: { ...blog.dns, proxied: false } });
     expect(site(dnsOnly, withRanges)).toBe(site(dnsOnly, ctx));

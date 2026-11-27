@@ -208,17 +208,31 @@ describe("parsers", () => {
     expect(engineVersion("27.3.1-1")).toBe("27.3.1");
   });
 
-  it("reads containers and their published ports", () => {
-    const [caddy, old] = parseContainers(
-      "shop-caddy-1|shop|0.0.0.0:80->80/tcp, :::80->80/tcp|running\nold-db-1|old||exited",
+  it("reads containers, their published ports and attached networks", () => {
+    const [caddy, old, bare] = parseContainers(
+      "shop-caddy-1|shop|0.0.0.0:80->80/tcp, :::80->80/tcp|running|shop_internal,opscrew-edge\nold-db-1|old||exited|old_internal\nbare-1|||running|",
     );
     expect(caddy).toEqual({
       name: "shop-caddy-1",
       project: "shop",
       ports: "0.0.0.0:80->80/tcp, :::80->80/tcp",
       running: true,
+      networks: ["shop_internal", "opscrew-edge"],
     });
-    expect(old).toEqual({ name: "old-db-1", project: "old", ports: "", running: false });
+    expect(old).toEqual({
+      name: "old-db-1",
+      project: "old",
+      ports: "",
+      running: false,
+      networks: ["old_internal"],
+    });
+    expect(bare).toEqual({
+      name: "bare-1",
+      project: "",
+      ports: "",
+      running: true,
+      networks: [],
+    });
     expect(publishesPort(caddy?.ports ?? "", 80)).toBe(true);
     expect(publishesPort("127.0.0.1:18080->80/tcp", 18080)).toBe(false);
     expect(publishesPort("127.0.0.1:18080->80/tcp", 18080, true)).toBe(true);

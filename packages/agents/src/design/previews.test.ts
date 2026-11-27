@@ -298,7 +298,7 @@ describe("previewMemoryText", () => {
   it("names the cap, each preview's limits and what stays free", () => {
     const plan = testPlan();
     expect(previewMemoryText(plan, 2, 4096, 128)).toBe(
-      `Memory limits: up to 2 previews at once, each ${plan.app.memoryMb + 512} MB (the app ${plan.app.memoryMb} MB, db 512 MB); OpsCrew's edge and the system 512 MB; ${((4096 - 2 * (plan.app.memoryMb + 512) - 512) / 1024).toFixed(1)} GB of 4.0 GB free.`,
+      `Memory limits: up to 2 previews at once, each ${plan.app.memoryMb + 512} MB (the app ${plan.app.memoryMb} MB, db 512 MB); 32 MB for additional preview proxies; OpsCrew's edge and the system 512 MB; ${((4096 - 2 * (plan.app.memoryMb + 512) - 32 - 512) / 1024).toFixed(1)} GB of 4.0 GB free.`,
     );
   });
 });

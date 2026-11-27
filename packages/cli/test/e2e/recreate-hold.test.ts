@@ -90,14 +90,14 @@ describe.skipIf(SKIP !== undefined)("a server's recreate under load (014, T1416b
   const appDir = () => path.join(work, "srv", "apps", app);
   const edgeFile = () => path.join(work, "srv", "edge", "compose.yaml");
 
-  /** `kamal-proxy <args>` in the edge's kamal-proxy. */
+  /** `kamal-proxy <args>` in the app's per-app kamal-proxy. */
   function kamalProxy(...args: string[]) {
     return docker([
       "compose",
       "-p",
-      edgeProject,
+      app,
       "-f",
-      edgeFile(),
+      path.join(appDir(), "compose.yaml"),
       "exec",
       "-T",
       "kamal-proxy",
@@ -190,7 +190,7 @@ describe.skipIf(SKIP !== undefined)("a server's recreate under load (014, T1416b
     const srv = `${work.replaceAll("\\", "/")}/srv/`;
     script = `${(remote ?? "").replaceAll("/srv/", srv).replaceAll(`-p ${EDGE_PROJECT} `, `-p ${edgeProject} `)}\n`;
     expect(script).toContain(`kamal-proxy pause ${app} --drain-timeout 30s --max-pause 90s`);
-    expect(script).toContain(`-p ${edgeProject} -f ${srv}edge/compose.yaml`);
+    expect(script).toContain("docker compose exec -T kamal-proxy kamal-proxy");
 
     // The stand-in app's images.
     for (const [version, tag] of Object.entries(images)) {
@@ -204,7 +204,7 @@ describe.skipIf(SKIP !== undefined)("a server's recreate under load (014, T1416b
       built.add(tag);
     }
 
-    // The edge: kamal-proxy as OpsCrew renders it, on the test's network.
+    // The edge network and the app's Compose file: `app` on `internal`, bridged by its per-app `kamal-proxy`.
     await dockerOk(["network", "create", "--label", LABEL, network], "creating the network");
     proxyPort = await freePort();
     const edge = parse(renderEdgeCompose(plan).content) as {
@@ -213,22 +213,19 @@ describe.skipIf(SKIP !== undefined)("a server's recreate under load (014, T1416b
     };
     const kamal = edge.services["kamal-proxy"];
     expect(kamal?.image).toBe(IMAGES.kamalProxy.ref);
-    const localEdge = {
-      services: {
-        "kamal-proxy": { ...kamal, labels: [LABEL], ports: [`127.0.0.1:${proxyPort}:80`] },
-      },
-      networks: { [EDGE_PROJECT]: { external: true, name: network } },
-      volumes: { "kamal-proxy-config": {} },
-    };
     await mkdir(path.dirname(edgeFile()), { recursive: true });
-    await writeFile(edgeFile(), stringify(localEdge, { lineWidth: 0 }));
-    await dockerOk(
-      ["compose", "-p", edgeProject, "-f", edgeFile(), "up", "-d", "--wait"],
-      "starting kamal-proxy",
-      TWO_MINUTES,
+    await writeFile(
+      edgeFile(),
+      stringify(
+        {
+          services: { "kamal-proxy": { ...kamal, labels: [LABEL] } },
+          networks: { [EDGE_PROJECT]: { external: true, name: network } },
+          volumes: { "kamal-proxy-config": {} },
+        },
+        { lineWidth: 0 },
+      ),
     );
 
-    // The app's folder: a Compose file with the app on the edge's network.
     await mkdir(appDir(), { recursive: true });
     const appCompose = {
       services: {
@@ -237,12 +234,34 @@ describe.skipIf(SKIP !== undefined)("a server's recreate under load (014, T1416b
           image: "${APP_IMAGE}",
           labels: [LABEL],
           environment: { PORT: String(plan.app.port) },
-          networks: [EDGE_PROJECT],
+          networks: ["internal"],
+        },
+        "kamal-proxy": {
+          ...kamal,
+          labels: [LABEL],
+          ports: [`127.0.0.1:${proxyPort}:80`],
+          networks: { internal: {}, [EDGE_PROJECT]: { aliases: [`${app}-kamal-proxy`] } },
         },
       },
-      networks: { [EDGE_PROJECT]: { external: true, name: network } },
+      networks: { internal: {}, [EDGE_PROJECT]: { external: true, name: network } },
+      volumes: { "kamal-proxy-config": {} },
     };
     await writeFile(path.join(appDir(), "compose.yaml"), stringify(appCompose, { lineWidth: 0 }));
+    await dockerOk(
+      [
+        "compose",
+        "-p",
+        app,
+        "-f",
+        path.join(appDir(), "compose.yaml"),
+        "up",
+        "-d",
+        "--no-deps",
+        "kamal-proxy",
+      ],
+      "starting the app's kamal-proxy",
+      TWO_MINUTES,
+    );
   }, TEN_MINUTES);
 
   afterAll(async () => {

@@ -94,7 +94,7 @@ describe("provision's memory check on a server other apps share", () => {
     const refusal = error as OpsCrewError;
     expect(refusal.code).toBe("PHASE_PRECONDITION");
     expect(refusal.message).toBe(
-      `Your server has 3789 MB of memory. After 384 MB for the system and 128 MB for OpsCrew's edge, the other OpsCrew app on it takes 1664 MB of memory limits ("shop" 1664 MB), which leaves 1613 MB, and this app's containers have 3584 MB of memory limits. Nothing was changed.`,
+      `Your server has 3789 MB of memory. After 384 MB for the system and 128 MB for OpsCrew's edge, the other OpsCrew app on it takes 1696 MB of memory limits ("shop" 1664 MB and 32 MB for its proxy), which leaves 1581 MB, and this app's containers have 3584 MB of memory limits. Nothing was changed.`,
     );
     expect(refusal.hint).toBe(
       "Lower the memory limits in opscrew/plan.yaml (app.memoryMb, and those of the workers and services), add memory to the server, or remove an app from it, then run `opscrew design` and `opscrew provision` again.",
@@ -121,7 +121,7 @@ describe("provision's memory check on a server other apps share", () => {
     await runProvision(s.deps, { services: s.services, planOnly: true });
 
     expect(warnings(s)).toContain(
-      `Your server keeps only 2% of its memory free after the memory limits of this app (1536 MB) and of the other OpsCrew app on it (1664 MB: "shop" 1664 MB), OpsCrew's edge and the system, so a container that grows can make the server run out of memory. Lower a memory limit in opscrew/plan.yaml, or add memory to the server.`,
+      `Your server keeps only 1% of its memory free after the memory limits of this app (1536 MB) and of the other OpsCrew app on it (1696 MB: "shop" 1664 MB and 32 MB for its proxy), OpsCrew's edge and the system, so a container that grows can make the server run out of memory. Lower a memory limit in opscrew/plan.yaml, or add memory to the server.`,
     );
     expect(s.engine.calls).toContain("plan");
     await expectNoLeak(s);
@@ -146,7 +146,7 @@ describe("provision's memory check on a server other apps share", () => {
     await expect(runProvision(s.deps, { services: s.services })).rejects.toMatchObject({
       code: "PHASE_PRECONDITION",
       message: expect.stringContaining(
-        `the other OpsCrew apps on it take 2264 MB of memory limits ("shop" 1664 MB and "blog" 600 MB), which leaves 1013 MB, and this app's containers have 1024 MB of memory limits. Nothing was changed.`,
+        `the other OpsCrew apps on it take 2328 MB of memory limits ("shop" 1664 MB and 32 MB for its proxy and "blog" 600 MB and 32 MB for its proxy), which leaves 949 MB, and this app's containers have 1024 MB of memory limits. Nothing was changed.`,
       ),
     });
     expect(s.handler.requests).toEqual([]);

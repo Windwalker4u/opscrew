@@ -26,7 +26,7 @@ image_of() {
   esac
 }
 start() {
-  local n=1 line
+  local n=1000 line
   [[ -f "$S/next" ]] && read -r n < "$S/next"
   echo $((n + 1)) > "$S/next"
   image_of "$1"
@@ -157,7 +157,7 @@ if [[ "$1" == compose ]]; then
     exec)
       if [[ "$2" == kamal-proxy ]]; then
         shift 3
-        exec kamal-proxy "$@"
+        KAMAL_PROJECT="$project" exec kamal-proxy "$@"
       fi
       ;;
     stop)
@@ -198,8 +198,24 @@ case "$1" in
       exit 1
     fi
     shift
-    for id in "$@"; do [[ "$id" == -f ]] || drop "$id"; done
+    dropped_projects=()
+    for id in "$@"; do
+      if [[ "$id" != -f ]]; then
+        for line in "${CONTAINERS[@]}"; do
+          read -r cid cp cs _ <<< "$line"
+          if [[ "$cid" == "$id" ]]; then
+            dropped_projects+=("$cp")
+            [[ "$cs" == kamal-proxy ]] && rm -f "$S/routes/$cp"
+          fi
+        done
+        drop "$id"
+      fi
+    done
     save
+    for dp in "${dropped_projects[@]}"; do
+      each 1 "$dp" "" ""
+      [[ ${#IDS[@]} -eq 0 ]] && rm -f "$S/routes/$dp"
+    done
     ;;
   ps)
     label_project "$@"

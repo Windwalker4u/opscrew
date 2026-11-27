@@ -4,12 +4,15 @@ import type { OpsCrewError } from "@opscrew/core";
 import { APP_SERVER, type DeployPlan, isServerlessTarget } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import {
+  APP_KAMAL_PROXY_SERVICE,
   additionsPath,
   appDir,
+  appProxyAlias,
+  appProxyUpstream,
   caddyAdditionsFile,
   EDGE_PROJECT,
-  EDGE_UPSTREAM,
   edgeProxy,
+  KAMAL_PROXY_MEMORY_MB,
   type LocalhostSite,
   renderEdgeCompose,
 } from "../edge";
@@ -21,6 +24,7 @@ import {
   openlitespeedAdditionsFile,
   openlitespeedSite,
 } from "../edge/openlitespeed";
+import { IMAGES } from "../pins";
 import { notOnServer, wrongTarget } from "../providers";
 import { imageEnvironment } from "../railpack-laravel";
 import { runtimeDir } from "../runtime-dir";
@@ -188,12 +192,21 @@ export function renderCompose(plan: DeployPlan, o: { seed?: string } = {}): Rend
     // Docker waits this long after SIGTERM: the drain, plus time to finish shutting down.
     stop_grace_period: `${plan.deploy.drainSeconds + 5}s`,
     ...memoryLimit(plan.app.memoryMb),
-    ...hardened({ noCapabilities: true }),
-    // The edge's kamal-proxy reaches each copy there by its container name, `<app>-app-<n>`.
-    networks: ["internal", EDGE_PROJECT],
+    ...hardened({ noCapabilities: true, internal: true }),
     ...(Object.keys(backing.dependsOn).length > 0 ? { depends_on: backing.dependsOn } : {}),
   };
-  const services: Record<string, unknown> = { app };
+  const kamalProxy: Record<string, unknown> = {
+    image: IMAGES.kamalProxy.ref,
+    restart: "unless-stopped",
+    volumes: ["kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy"],
+    ...memoryLimit(KAMAL_PROXY_MEMORY_MB),
+    ...hardened({ noCapabilities: true }),
+    networks: {
+      internal: {},
+      [EDGE_PROJECT]: { aliases: [appProxyAlias(plan.app.name)] },
+    },
+  };
+  const services: Record<string, unknown> = { app, [APP_KAMAL_PROXY_SERVICE]: kamalProxy };
   // A one-off container of the app's image, environment and network running `command`; only
   // `docker compose run <name>` starts it (the deploy runs `release` before the app is replaced).
   const oneOff = (name: string, command: string, files: readonly string[] = []) => ({
@@ -230,13 +243,12 @@ export function renderCompose(plan: DeployPlan, o: { seed?: string } = {}): Rend
       ? { [STACK_CRONTAB.source]: { content: composeLiteral(crontab(plan)) } }
       : {}),
   };
+  const volumes = ["kamal-proxy-config", ...backing.volumes];
   const document = {
     name: local ? localComposeProject(plan) : plan.app.name,
     services,
     networks: { internal: {}, [EDGE_PROJECT]: { external: true } },
-    ...(backing.volumes.length > 0
-      ? { volumes: Object.fromEntries(backing.volumes.map((volume) => [volume, {}])) }
-      : {}),
+    volumes: Object.fromEntries(volumes.map((volume) => [volume, {}])),
     ...(Object.keys(configs).length > 0 ? { configs } : {}),
   };
   return {
@@ -365,19 +377,20 @@ export function renderCaddyfile(plan: DeployPlan, ctx: SiteContext): RenderedFil
   const additions = ctx.additions
     ? { file: caddyAdditionsFile(app), source: additionsPath(plan, "caddy") }
     : undefined;
+  const upstream = appProxyUpstream(app);
   const site: Parameters<typeof caddySite>[0] =
     plan.target.provider === "localhost"
       ? {
           mode: "direct",
           hosts: [localhostSite(ctx.localhost).hostname],
-          upstream: EDGE_UPSTREAM,
+          upstream,
           local: { dir: originTlsDir(app), httpsPort: plan.target.ports.https },
           additions,
         }
       : {
           mode: tunnelMode(plan) ? "tunnel" : "direct",
           hosts: siteHosts(plan),
-          upstream: EDGE_UPSTREAM,
+          upstream,
           acmeEmail: ctx.acmeEmail,
           origin: siteOrigin(plan, ctx),
           additions,

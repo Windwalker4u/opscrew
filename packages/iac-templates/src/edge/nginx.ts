@@ -6,6 +6,7 @@
  */
 import { edgeProvider } from "@opscrew/edge-providers";
 import { BASELINE_HEADERS, HSTS, shellQuote, splitByOrigin } from "../runtime/services";
+import { appProxyAlias } from "./index";
 import { httpsPortSuffix, LOCALHOST_TLS } from "./localhost";
 
 /**
@@ -305,7 +306,7 @@ function serve(site: NginxSite, o: { hsts: boolean; h3: boolean }): string[] {
     "\tproxy_buffering off;",
     "\tproxy_request_buffering off;",
     "\tlocation / {",
-    `\t\tproxy_pass http://${NGINX_UPSTREAM};`,
+    `\t\tproxy_pass http://${appProxyAlias(site.app)};`,
     "\t}",
     ...(site.additions === undefined
       ? []
@@ -401,9 +402,16 @@ function tlsServer(site: NginxSite, hosts: readonly string[], tls: readonly stri
  */
 export function nginxSite(site: NginxSite): string[] {
   const zone = `limit_req_zone $binary_remote_addr zone=${nginxRequestZone(site.app)}:1m rate=10r/s;`;
+  const upstream = appProxyAlias(site.app);
   const lines = [
     `# Your additions can limit requests with \`limit_req zone=${nginxRequestZone(site.app)};\`.`,
     zone,
+    "",
+    "# This app's own kamal-proxy, resolved in Docker's DNS so another stopped app never blocks reload.",
+    `upstream ${upstream} {`,
+    `\tzone ${upstream} 64k;`,
+    `\tserver ${upstream}:80 resolve max_fails=0;`,
+    "}",
     "",
   ];
   if (site.mode === "tunnel") {

@@ -1,6 +1,6 @@
 import type { ComputeCatalog, ComputeOffer } from "@opscrew/contracts";
 import { listText, OpsCrewError, plural } from "@opscrew/core";
-import { providerBucket } from "@opscrew/iac-templates";
+import { KAMAL_PROXY_MEMORY_MB, providerBucket } from "@opscrew/iac-templates";
 import type { DeployPlan, Previews, ProjectFacts } from "@opscrew/plan-schema";
 import { storageVariableKind } from "../shared/app-env";
 import {
@@ -37,9 +37,19 @@ export interface PreviewHost {
 }
 
 /**
+ * Extra memory for per-preview `kamal-proxy` containers beyond the single proxy already counted in
+ * `edgeMb`: on a dedicated preview server `cap - 1` additional proxies, and on a shared host all
+ * `cap` previews (the host app already uses `edgeMb`'s proxy).
+ */
+function previewProxiesMb(cap: number, sharedHost: boolean): number {
+  return KAMAL_PROXY_MEMORY_MB * (sharedHost ? cap : Math.max(0, cap - 1));
+}
+
+/**
  * The memory line of a preview server: the cap, each preview's memory limits (the app and its
- * services, as the runtime renders them), on another environment's server what that environment
- * takes (`host`), the edge's and the system's share and what stays free.
+ * services, as the runtime renders them), extra per-preview proxies, on another environment's
+ * server what that environment takes (`host`), the edge's and the system's share and what stays
+ * free.
  */
 export function previewMemoryText(
   components: AppMemoryInput,
@@ -51,14 +61,26 @@ export function previewMemoryText(
   const limits = appMemoryLimits(components);
   const each = limits.reduce((sum, limit) => sum + limit.memoryMb, 0);
   const hostMb = host?.memoryMb ?? 0;
-  const free = Math.max(0, serverMb - cap * each - hostMb - edgeMb - SYSTEM_RESERVE_MB);
+  const extraProxies = previewProxiesMb(cap, host !== undefined);
+  const free = Math.max(
+    0,
+    serverMb - cap * each - extraProxies - hostMb - edgeMb - SYSTEM_RESERVE_MB,
+  );
+  const proxies =
+    extraProxies === 0
+      ? ""
+      : `; ${extraProxies} MB for ${host === undefined ? "additional preview proxies" : "their proxies"}`;
   const beside = host === undefined ? "" : `; ${host.environment}'s own containers ${hostMb} MB`;
-  return `Memory limits: up to ${plural(cap, "preview")} at once, each ${each} MB (${limits.map((l) => `${l.name} ${l.memoryMb} MB`).join(", ")})${beside}; OpsCrew's edge and the system ${edgeMb + SYSTEM_RESERVE_MB} MB; ${gb(free)} of ${gb(serverMb)} free.`;
+  return `Memory limits: up to ${plural(cap, "preview")} at once, each ${each} MB (${limits.map((l) => `${l.name} ${l.memoryMb} MB`).join(", ")})${proxies}${beside}; OpsCrew's edge and the system ${edgeMb + SYSTEM_RESERVE_MB} MB; ${gb(free)} of ${gb(serverMb)} free.`;
 }
 
-/** How many previews of `eachMb` a server of `serverMb` holds next to the edge and the system. */
+/** How many previews of `eachMb` (plus each preview's proxy) a server of `serverMb` holds next to the edge and the system. */
 function capFor(serverMb: number, eachMb: number, edgeMb: number): number {
-  return Math.min(MAX_PREVIEW_CAP, Math.floor((serverMb - SYSTEM_RESERVE_MB - edgeMb) / eachMb));
+  const frontEdge = Math.max(0, edgeMb - KAMAL_PROXY_MEMORY_MB);
+  return Math.min(
+    MAX_PREVIEW_CAP,
+    Math.floor((serverMb - SYSTEM_RESERVE_MB - frontEdge) / (eachMb + KAMAL_PROXY_MEMORY_MB)),
+  );
 }
 
 /**
@@ -121,8 +143,13 @@ export function requirePreviewsFit(
   host?: Pick<PreviewHost, "environment" | "memoryMb">,
 ): void {
   const hostMb = host?.memoryMb ?? 0;
-  if (memoryHeadroom(serverMb, cap * eachMb + hostMb, edgeMb).fits) return;
-  const fits = Math.max(0, Math.floor((serverMb - SYSTEM_RESERVE_MB - edgeMb - hostMb) / eachMb));
+  const extraProxies = previewProxiesMb(cap, host !== undefined);
+  if (memoryHeadroom(serverMb, cap * eachMb + extraProxies + hostMb, edgeMb).fits) return;
+  const available =
+    host === undefined
+      ? serverMb - SYSTEM_RESERVE_MB - Math.max(0, edgeMb - KAMAL_PROXY_MEMORY_MB)
+      : serverMb - SYSTEM_RESERVE_MB - edgeMb - hostMb;
+  const fits = Math.max(0, Math.floor(available / (eachMb + KAMAL_PROXY_MEMORY_MB)));
   const server = host === undefined ? "Your server" : `${host.environment}'s server`;
   const after =
     host === undefined

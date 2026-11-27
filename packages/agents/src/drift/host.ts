@@ -35,9 +35,11 @@ import {
   upperFirst,
 } from "@opscrew/core";
 import {
+  APP_KAMAL_PROXY_SERVICE,
   addressUpdaterName,
   DEPLOY_SECRETS,
   EDGE_DIR,
+  EDGE_PROJECT,
   EDGE_PROXIES,
   edgeProxy,
   homeIpv6Proxied,
@@ -898,6 +900,21 @@ export function containerDifferences(
     out.push({
       ...ofContainers,
       detail: `${listText(stopped)} ${stopped.length === 1 ? "is" : "are"} stopped.`,
+    });
+  }
+  if (status.onEdgeNetwork !== undefined && status.onEdgeNetwork.length > 0) {
+    out.push({
+      ...ofContainers,
+      detail: `${listText(status.onEdgeNetwork)} ${status.onEdgeNetwork.length === 1 ? "is" : "are"} still attached to the shared edge network (${EDGE_PROJECT}) instead of only the app's internal network. ${REDEPLOY}`,
+    });
+  }
+  const proxyStopped = stopped.some(
+    (name) => containerService(plan.app.name, name) === APP_KAMAL_PROXY_SERVICE,
+  );
+  if (status.missingAppProxy === true && !proxyStopped) {
+    out.push({
+      ...ofContainers,
+      detail: `The app's proxy (${APP_KAMAL_PROXY_SERVICE}) is not running on the server. ${REDEPLOY}`,
     });
   }
   return out;

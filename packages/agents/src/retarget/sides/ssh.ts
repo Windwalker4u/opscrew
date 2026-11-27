@@ -80,7 +80,7 @@ export interface SshSideInput {
 export type SshSideParts = Omit<MoveSide, "kind" | "prepare" | "remove">;
 
 /** The typed server operations' options for the session's app. */
-function opsOf(session: MoveBase): ServerOpOptions {
+function opsOf(session: MoveBase): ServerOpOptions & { app: string } {
   return { ...serverOps(session.plan, session.deps.redactor), command: session.command };
 }
 

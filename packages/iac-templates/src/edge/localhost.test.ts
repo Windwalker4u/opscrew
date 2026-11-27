@@ -67,7 +67,7 @@ describe("the app's Compose project on this computer", () => {
 
   it("keeps the services' data in named volumes, opscrew-<app>_<service>_<folder>", () => {
     expect(doc.services.db?.volumes).toEqual(["db_data:/var/lib/postgresql/data"]);
-    expect(doc.volumes).toEqual({ db_data: {} });
+    expect(doc.volumes).toEqual({ "kamal-proxy-config": {}, db_data: {} });
     const many = parse(
       renderCompose(onThisComputer(withServices([{ kind: "mongodb" }, { kind: "kafka" }]))).content,
     ) as ComposeFile;
@@ -76,6 +76,7 @@ describe("the app's Compose project on this computer", () => {
       "mongodb_configdb:/data/configdb",
     ]);
     expect(Object.keys(many.volumes ?? {})).toEqual([
+      "kamal-proxy-config",
       "mongodb_db",
       "mongodb_configdb",
       "kafka_data",
@@ -87,7 +88,11 @@ describe("the app's Compose project on this computer", () => {
 
   it("publishes no port: only the edge does, on 127.0.0.1", () => {
     for (const service of Object.values(doc.services)) expect(service.ports).toBeUndefined();
-    expect(doc.services.app?.networks).toEqual(["internal", "opscrew-edge"]);
+    expect(doc.services.app?.networks).toEqual(["internal"]);
+    expect(doc.services["kamal-proxy"]?.networks).toEqual({
+      internal: {},
+      "opscrew-edge": { aliases: ["shop-kamal-proxy"] },
+    });
   });
 
   it("leaves a server's project as it was", () => {
@@ -220,7 +225,7 @@ describe("the app's site on this computer", () => {
     expect(content).toContain(
       "\nhttp://shop.localhost {\n\tredir https://{host}{uri} 308\n}\n\nshop.localhost {\n\ttls /etc/caddy/tls/shop/local.pem /etc/caddy/tls/shop/local.key\n\tencode zstd gzip\n",
     );
-    expect(content).toContain("\treverse_proxy kamal-proxy:80\n");
+    expect(content).toContain("\treverse_proxy shop-kamal-proxy:80\n");
     // No ACME: the site's email is not used, and there is no other hostname.
     expect(content).not.toContain("ops@example.com");
     expect(content.match(/^\S[^\n]* \{$/gm)).toEqual([
@@ -239,7 +244,7 @@ describe("the app's site on this computer", () => {
     expect(content).toContain(
       "server {\n\tlisten 8443 ssl;\n\tserver_name shop.localhost;\n\tssl_certificate /etc/nginx/tls/shop/local.pem;\n\tssl_certificate_key /etc/nginx/tls/shop/local.key;\n",
     );
-    expect(content).toContain("\t\tproxy_pass http://kamal-proxy;\n");
+    expect(content).toContain("\t\tproxy_pass http://shop-kamal-proxy;\n");
     expect(content).not.toMatch(/acme|letsencrypt|ssl_verify_client/);
     expect(certbotHosts(shopOnNginx, ctx)).toEqual([]);
   });

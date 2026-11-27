@@ -6,7 +6,7 @@ exports[`renderCaddyfile (the app's site on the shared edge) > serves the domain
 example.com {
 	tls ops@example.com
 	encode zstd gzip
-	reverse_proxy kamal-proxy:80
+	reverse_proxy shop-kamal-proxy:80
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		-Server
@@ -61,12 +61,31 @@ services:
       - ALL
     networks:
       - internal
-      - opscrew-edge
     depends_on:
       db:
         condition: service_healthy
       cache:
         condition: service_healthy
+  kamal-proxy:
+    image: <pin:IMAGES.kamalProxy>
+    restart: unless-stopped
+    volumes:
+      - kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy
+    mem_limit: 32m
+    memswap_limit: 32m
+    security_opt: *a1
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    cap_drop:
+      - ALL
+    networks:
+      internal: {}
+      opscrew-edge:
+        aliases:
+          - shop-kamal-proxy
   db:
     image: <pin:IMAGES.postgres>
     restart: unless-stopped
@@ -123,6 +142,8 @@ networks:
   internal: {}
   opscrew-edge:
     external: true
+volumes:
+  kamal-proxy-config: {}
 "
 `;
 
@@ -153,12 +174,31 @@ services:
       - ALL
     networks:
       - internal
-      - opscrew-edge
     depends_on:
       db:
         condition: service_healthy
       cache:
         condition: service_healthy
+  kamal-proxy:
+    image: <pin:IMAGES.kamalProxy>
+    restart: unless-stopped
+    volumes:
+      - kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy
+    mem_limit: 32m
+    memswap_limit: 32m
+    security_opt: *a1
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    cap_drop:
+      - ALL
+    networks:
+      internal: {}
+      opscrew-edge:
+        aliases:
+          - shop-kamal-proxy
   release:
     image: \${APP_IMAGE:?APP_IMAGE is not set; deploy with the OpsCrew workflow}
     profiles:
@@ -239,5 +279,7 @@ networks:
   internal: {}
   opscrew-edge:
     external: true
+volumes:
+  kamal-proxy-config: {}
 "
 `;

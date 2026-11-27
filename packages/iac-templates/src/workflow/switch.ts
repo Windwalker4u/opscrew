@@ -8,6 +8,7 @@ import {
   servicesOn,
 } from "@opscrew/plan-schema";
 import {
+  APP_KAMAL_PROXY_SERVICE,
   APPS_DIR,
   additionsPath,
   appDir,
@@ -185,9 +186,10 @@ const WRITE_ENV = "printf 'APP_IMAGE=%s\\n' \"$APP_IMAGE\" > .env";
  * command, the switch, the workers and cron: nothing changes kamal-proxy's routes. Once the marker
  * says {@link MOVE_COPIED}, the deploy goes on, with {@link MOVE_COPIED_NOTICE}.
  */
-function moveWaiting(): string[] {
+function moveWaiting(beforeExit: readonly string[] = []): string[] {
   return [
     `if [ "$MODE" = deploy ] && ${MOVE_HOLDS}; then`,
+    ...beforeExit.map((line) => `  ${line}`),
     "  docker compose up --no-start --no-deps app",
     `  ${WRITE_ENV}`,
     `  echo "waiting $APP_IMAGE" > ${START_OUTCOME}`,
@@ -489,10 +491,24 @@ export function proxyHosts(plan: DeployPlan, localhost: LocalhostSite | undefine
  */
 const MAX_PAUSE_SECONDS = 90;
 
-/** `kamal-proxy <words>` in the edge's kamal-proxy, with no stdin (the script arrives on it). */
+/** `kamal-proxy <words>` in this app's own kamal-proxy, with no stdin (the script arrives on it). */
 function kamalProxy(words: string): string {
+  return `docker compose exec -T ${APP_KAMAL_PROXY_SERVICE} kamal-proxy ${words} < /dev/null`;
+}
+
+/** `kamal-proxy <words>` in the legacy shared edge's kamal-proxy (for mixed-version transitions). */
+function sharedKamalProxy(words: string): string {
   return `edge exec -T kamal-proxy kamal-proxy ${words} < /dev/null`;
 }
+
+/**
+ * Ensures `opscrew-edge` exists and this app's own `kamal-proxy` runs (`--no-deps` so normal app
+ * operations never recreate it).
+ */
+const ENSURE_APP_PROXY = [
+  `docker network inspect ${EDGE_PROJECT} > /dev/null 2>&1 || docker network create ${EDGE_PROJECT} > /dev/null`,
+  `docker compose up -d --no-deps ${APP_KAMAL_PROXY_SERVICE}`,
+];
 
 /**
  * The lock in the app's folder (fd 7) that the start script holds for its whole run and the
@@ -632,7 +648,8 @@ export function holdRequests(plan: DeployPlan, onExit: readonly string[]): strin
 
 /** kamal-proxy holds the app's requests: the line of {@link holdRequests} without its trap. */
 export function pauseRequests(plan: DeployPlan): string {
-  return `${kamalProxy(`pause ${plan.app.name} --drain-timeout ${plan.deploy.drainSeconds}s --max-pause ${MAX_PAUSE_SECONDS}s`)} > /dev/null 2>&1 || true`;
+  const args = `pause ${plan.app.name} --drain-timeout ${plan.deploy.drainSeconds}s --max-pause ${MAX_PAUSE_SECONDS}s`;
+  return `${kamalProxy(args)} > /dev/null 2>&1 || true; ${sharedKamalProxy(args)} > /dev/null 2>&1 || true`;
 }
 
 /**
@@ -656,7 +673,8 @@ export function resumeApp(plan: DeployPlan): string[] {
  * that kamal-proxy does not have, changes nothing.
  */
 export function resumeRequests(plan: DeployPlan): string {
-  return `${kamalProxy(`resume ${plan.app.name}`)} > /dev/null 2>&1 || true`;
+  const args = `resume ${plan.app.name}`;
+  return `${kamalProxy(args)} > /dev/null 2>&1 || true; ${sharedKamalProxy(args)} > /dev/null 2>&1 || true`;
 }
 
 /**
@@ -677,8 +695,9 @@ export function switchApp(
   hosts: string,
   failed: readonly string[],
   onExit: readonly string[] = [],
+  options: { installEdge?: boolean } = {},
 ): string[] {
-  return [...switchLines(plan, hosts, failed, onExit), ...afterSwitch(plan)];
+  return [...switchLines(plan, hosts, failed, onExit, options), ...afterSwitch(plan)];
 }
 
 /**
@@ -718,28 +737,40 @@ function switchLines(
   hosts: string,
   failed: readonly string[],
   onExit: readonly string[],
+  options: { installEdge?: boolean } = {},
 ): string[] {
   const { strategy, drainSeconds } = plan.deploy;
   const app = plan.app.name;
+  const deployArgs = (target: string) =>
+    `deploy ${app} --target ${target}${hosts} --health-check-path ${shellQuote(healthPath(plan))} --deploy-timeout ${DEPLOY_TIMEOUT_SECONDS}s --drain-timeout ${drainSeconds}s --target-timeout ${TARGET_TIMEOUT_SECONDS}s`;
   const kamal = [
     'name="$(docker inspect --format \'{{.Name}}\' "$new")"',
-    `if ! ${kamalProxy(`deploy ${app} --target "\${name#/}:${plan.app.port}"${hosts} --health-check-path ${shellQuote(healthPath(plan))} --deploy-timeout ${DEPLOY_TIMEOUT_SECONDS}s --drain-timeout ${drainSeconds}s --target-timeout ${TARGET_TIMEOUT_SECONDS}s`)}; then`,
+    `if ! ${kamalProxy(deployArgs(`"\${name#/}:${plan.app.port}"`))}; then`,
     ...failed.map((line) => `  ${line}`),
     '  docker rm -f "$new" > /dev/null',
     "  exit 1",
     "fi",
   ];
+  const installEdge = options.installEdge === true ? ["install_edge"] : [];
+  const dropSharedRoute =
+    options.installEdge === true
+      ? [`${sharedKamalProxy(`remove ${app}`)} > /dev/null 2>&1 || true`]
+      : [];
   if (strategy === "recreate") {
     return [
+      ...ENSURE_APP_PROXY,
       ...holdRequests(plan, onExit),
       WRITE_ENV,
       "docker compose up -d --no-deps --remove-orphans app",
       'new="$(docker compose ps -aq app)"',
       ...kamal,
+      ...installEdge,
       kamalProxy(`resume ${app}`),
+      ...dropSharedRoute,
     ];
   }
   return [
+    ...ENSURE_APP_PROXY,
     "old=\"$(docker compose ps -aq app | tr '\\n' ' ')\"",
     'docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app',
     'new=""',
@@ -747,11 +778,13 @@ function switchLines(
     '  case " $old " in *" $id "*) ;; *) new="$id" ;; esac',
     "done",
     ...kamal,
+    ...installEdge,
     WRITE_ENV,
     "for id in $old; do",
     '  docker stop "$id" > /dev/null',
     '  docker rm "$id" > /dev/null',
     "done",
+    ...dropSharedRoute,
   ];
 }
 
@@ -945,9 +978,25 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
   /** Puts `previous` back as `file`, or removes `file` when it had none. */
   const restore = (previous: string, file: string) =>
     `if [ -f ${previous} ]; then cp ${previous} ${file}; else rm -f ${file}; fi`;
-  /** The app's previous site, additions and TLS files back, indented by `pad`. */
+  /**
+   * The app's previous route, site, additions and TLS files back, indented by `pad`: restores the
+   * route on this app's kamal-proxy to `$old` (if rolling had a previous container) BEFORE putting
+   * the previous site file back, so traffic never points at a removed container or a missing route.
+   */
+  const hosts = proxyHosts(plan, o.localhost);
+  const restoreRoute = [
+    'if [ -n "${old:-}" ]; then',
+    "  _old_first=\"$(printf '%s' \"$old\" | awk '{print $1}')\"",
+    '  _old_name="$(docker inspect --format \'{{.Name}}\' "$_old_first" 2> /dev/null || true)"',
+    '  if [ -n "$_old_name" ]; then',
+    `    ${kamalProxy(`deploy ${app} --target "\${_old_name#/}:${plan.app.port}"${hosts} --health-check-path ${shellQuote(healthPath(plan))} --deploy-timeout ${DEPLOY_TIMEOUT_SECONDS}s --drain-timeout ${plan.deploy.drainSeconds}s --target-timeout ${TARGET_TIMEOUT_SECONDS}s`)} > /dev/null 2>&1 || true`,
+    "  fi",
+    "fi",
+    'if [ -n "${new:-}" ] && [ -n "${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi',
+  ];
   const restoreFiles = (pad: string) =>
     [
+      ...restoreRoute,
       restore(PREVIOUS_SITE, site),
       ...(shared === undefined
         ? []
@@ -1528,6 +1577,7 @@ export function switchCommands(
       hosts,
       ['keep_failed app "$new" health', `echo ${shellQuote(healthFailed(p))}`],
       [LOGOUT],
+      { installEdge: true },
     );
   // The database step always recreates: the newer version must not write to a database being replaced.
   const switching =
@@ -1558,12 +1608,14 @@ export function switchCommands(
     ...keepFailed(plan),
     EDGE_FUNCTION,
     "docker compose pull",
-    ...edgeCommands(plan, edgeFiles),
     ...(steady.length === 0 ? [] : [`docker compose up -d --no-deps --wait ${steady.join(" ")}`]),
     ...portRepair(plan, APP_SERVER),
     ...serviceInit(plan, init, initLog(plan)),
+    "install_edge() {",
+    ...edgeCommands(plan, edgeFiles),
+    "}",
     // A move to the server keeps the app off its empty services until its data is copied.
-    ...(o.preview === true ? [] : moveWaiting()),
+    ...(o.preview === true ? [] : moveWaiting(["install_edge"])),
     ...(o.preview === true ? [] : snapshotScheduleLines(plan, APP_SERVER)),
     ...(data ? snapshotStep(plan, appFolder(plan)) : []),
     ...release,

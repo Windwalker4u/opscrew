@@ -364,17 +364,23 @@ export function majorOf(version: string | null): number {
 }
 
 /**
- * `docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Ports}}|{{.State}}'`
+ * `docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Ports}}|{{.State}}|{{.Networks}}'`
  * (all containers, running or not).
  */
 export function parseContainers(text: string): HostFacts["containers"] {
   return linesOf(text).flatMap((line) => {
     const fields = line.split("|");
+    if (fields.length < 5) return [];
     const [name, project] = fields;
     if (!name) return [];
-    const state = fields.length >= 4 ? (fields[fields.length - 1] ?? "") : "running";
-    const ports = fields.slice(2, fields.length >= 4 ? -1 : undefined).join("|");
-    return [{ name, project: project ?? "", ports, running: state === "running" }];
+    const networksRaw = fields[fields.length - 1] ?? "";
+    const state = fields[fields.length - 2] ?? "";
+    const ports = fields.slice(2, -2).join("|");
+    const networks = networksRaw
+      .split(",")
+      .map((network) => network.trim())
+      .filter((network) => network !== "");
+    return [{ name, project: project ?? "", ports, running: state === "running", networks }];
   });
 }
 

@@ -12,6 +12,7 @@
 import { escapeRegExp } from "@opscrew/core";
 import { edgeProvider } from "@opscrew/edge-providers";
 import { BASELINE_HEADERS, HSTS, shellQuote, splitByOrigin } from "../runtime/services";
+import { appProxyUpstream } from "./index";
 import { httpsPortSuffix, LOCALHOST_TLS } from "./localhost";
 import { ACME_WEBROOT, certbotLive, MOZILLA_CIPHERS, RELOAD_DIR } from "./nginx";
 
@@ -456,10 +457,10 @@ export function openlitespeedSite(site: OpenLiteSpeedSite): Record<string, strin
     set("enableGzip", 0).trim(),
     "",
     ...ERROR_PAGES,
-    "# kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.",
+    "# This app's own kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.",
     ...block(`extprocessor ${OPENLITESPEED_UPSTREAM}`, [
       set("type", "proxy"),
-      set("address", "kamal-proxy:80"),
+      set("address", appProxyUpstream(app)),
       set("maxConns", 1000),
       set("pcKeepAliveTimeout", 60),
       set("initTimeout", 60),
@@ -483,7 +484,7 @@ export function openlitespeedSite(site: OpenLiteSpeedSite): Record<string, strin
         ]
       : []),
     "# WebSockets: an Upgrade request reaches the app as one.",
-    ...block("websocket /", [set("address", "kamal-proxy:80")]),
+    ...block("websocket /", [set("address", appProxyUpstream(app))]),
     ...rewrite(rewriteRules(site, how)),
     ...(how.tls.length > 0 ? block("vhssl", [...how.tls, ...TLS_LINES]) : []),
     "# Off: an answer is kept only when the app asks for it (X-LiteSpeed-Cache-Control).",

@@ -259,9 +259,10 @@ describe("the app's site on nginx", () => {
     "\tproxy_buffering off;",
     "\tproxy_request_buffering off;",
     "\tlocation / {",
-    "\t\tproxy_pass http://kamal-proxy;",
+    "\t\tproxy_pass http://shop-kamal-proxy;",
     "\t}",
   ].join("\n");
+  const proxyFor = (app: string) => PROXY.replace("shop-kamal-proxy", `${app}-kamal-proxy`);
 
   it("is sites/<app>.conf with the app's request zone", () => {
     const [site] = renderEdgeSite(shop, proxied);
@@ -346,16 +347,16 @@ describe("the app's site on nginx", () => {
 
   it("repeats HSTS, the baseline headers and HTTP/3's Alt-Svc in every HTTPS server, with WebSockets, long requests and the plan's body limit", () => {
     const big = DeployPlanSchema.parse({ ...blog, app: { ...blog.app, maxBodyMb: 512 } });
-    for (const content of [
-      sites(shop, proxied)["shop.conf"],
-      sites(shop, { ...ctx, originTls: { hostnames: ["example.com"] } })["shop.conf"],
-      sites(blog, ctx)["blog.conf"],
-    ]) {
+    for (const [app, content] of [
+      ["shop", sites(shop, proxied)["shop.conf"]],
+      ["shop", sites(shop, { ...ctx, originTls: { hostnames: ["example.com"] } })["shop.conf"]],
+      ["blog", sites(blog, ctx)["blog.conf"]],
+    ] as const) {
       const tls = servers(content ?? "").filter(serving);
       expect(tls.length).toBeGreaterThan(0);
       for (const block of tls) {
         expect(block).toContain(
-          `${HEADERS}\n\tadd_header Alt-Svc 'h3=":443"; ma=2592000' always;\n${PROXY}\n`,
+          `${HEADERS}\n\tadd_header Alt-Svc 'h3=":443"; ma=2592000' always;\n${proxyFor(app)}\n`,
         );
       }
     }
@@ -389,7 +390,7 @@ describe("the app's site on nginx", () => {
     );
     // The app, its headers (no HSTS over HTTP) and the user's additions; no redirect, no HTTPS.
     expect(server).toContain('\tadd_header X-Content-Type-Options "nosniff" always;\n');
-    expect(server).toContain("\t\tproxy_pass http://kamal-proxy;\n");
+    expect(server).toContain("\t\tproxy_pass http://blog-kamal-proxy;\n");
     expect(server).toContain("\tinclude /etc/nginx/sites/blog.additions;\n");
     expect(before).not.toContain("Strict-Transport-Security");
     expect(before).not.toContain("return 308");

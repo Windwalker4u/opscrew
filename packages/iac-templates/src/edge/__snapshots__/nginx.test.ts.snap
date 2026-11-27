@@ -7,6 +7,12 @@ exports[`snapshots > a DNS-only app's site, and before its first certificate 1`]
 # Your additions can limit requests with \`limit_req zone=opscrew_blog;\`.
 limit_req_zone $binary_remote_addr zone=opscrew_blog:1m rate=10r/s;
 
+# This app's own kamal-proxy, resolved in Docker's DNS so another stopped app never blocks reload.
+upstream blog-kamal-proxy {
+	zone blog-kamal-proxy 64k;
+	server blog-kamal-proxy:80 resolve max_fails=0;
+}
+
 server {
 	listen 8080;
 	server_name blog.example.com;
@@ -42,7 +48,7 @@ server {
 	proxy_buffering off;
 	proxy_request_buffering off;
 	location / {
-		proxy_pass http://kamal-proxy;
+		proxy_pass http://blog-kamal-proxy;
 	}
 }
 ",
@@ -50,6 +56,12 @@ server {
 # blog's site on the server's shared edge (nginx): the deploy copies it to /srv/edge/sites/blog.conf.
 # Your additions can limit requests with \`limit_req zone=opscrew_blog;\`.
 limit_req_zone $binary_remote_addr zone=opscrew_blog:1m rate=10r/s;
+
+# This app's own kamal-proxy, resolved in Docker's DNS so another stopped app never blocks reload.
+upstream blog-kamal-proxy {
+	zone blog-kamal-proxy 64k;
+	server blog-kamal-proxy:80 resolve max_fails=0;
+}
 
 # HTTP only until certbot has the first certificate; the deploy then installs the HTTPS site.
 server {
@@ -74,7 +86,7 @@ server {
 	proxy_buffering off;
 	proxy_request_buffering off;
 	location / {
-		proxy_pass http://kamal-proxy;
+		proxy_pass http://blog-kamal-proxy;
 	}
 }
 ",
@@ -87,6 +99,12 @@ exports[`snapshots > a proxied app's site with origin TLS and its own additions 
 # shop's site on the server's shared edge (nginx): the deploy copies it to /srv/edge/sites/shop.conf.
 # Your additions can limit requests with \`limit_req zone=opscrew_shop;\`.
 limit_req_zone $binary_remote_addr zone=opscrew_shop:1m rate=10r/s;
+
+# This app's own kamal-proxy, resolved in Docker's DNS so another stopped app never blocks reload.
+upstream shop-kamal-proxy {
+	zone shop-kamal-proxy 64k;
+	server shop-kamal-proxy:80 resolve max_fails=0;
+}
 
 server {
 	listen 8080;
@@ -122,7 +140,7 @@ server {
 	proxy_buffering off;
 	proxy_request_buffering off;
 	location / {
-		proxy_pass http://kamal-proxy;
+		proxy_pass http://shop-kamal-proxy;
 	}
 	# Your own additions (opscrew/proxy/additions.nginx).
 	include /etc/nginx/sites/shop.additions;
@@ -340,6 +358,12 @@ exports[`snapshots > two apps: two site files, one edge 1`] = `
 # Your additions can limit requests with \`limit_req zone=opscrew_blog;\`.
 limit_req_zone $binary_remote_addr zone=opscrew_blog:1m rate=10r/s;
 
+# This app's own kamal-proxy, resolved in Docker's DNS so another stopped app never blocks reload.
+upstream blog-kamal-proxy {
+	zone blog-kamal-proxy 64k;
+	server blog-kamal-proxy:80 resolve max_fails=0;
+}
+
 server {
 	listen 8080;
 	server_name blog.example.com;
@@ -375,7 +399,7 @@ server {
 	proxy_buffering off;
 	proxy_request_buffering off;
 	location / {
-		proxy_pass http://kamal-proxy;
+		proxy_pass http://blog-kamal-proxy;
 	}
 }
 ",
@@ -383,6 +407,12 @@ server {
 # blog's site on the server's shared edge (nginx): the deploy copies it to /srv/edge/sites/blog.conf.
 # Your additions can limit requests with \`limit_req zone=opscrew_blog;\`.
 limit_req_zone $binary_remote_addr zone=opscrew_blog:1m rate=10r/s;
+
+# This app's own kamal-proxy, resolved in Docker's DNS so another stopped app never blocks reload.
+upstream blog-kamal-proxy {
+	zone blog-kamal-proxy 64k;
+	server blog-kamal-proxy:80 resolve max_fails=0;
+}
 
 # HTTP only until certbot has the first certificate; the deploy then installs the HTTPS site.
 server {
@@ -407,7 +437,7 @@ server {
 	proxy_buffering off;
 	proxy_request_buffering off;
 	location / {
-		proxy_pass http://kamal-proxy;
+		proxy_pass http://blog-kamal-proxy;
 	}
 }
 ",
@@ -415,6 +445,12 @@ server {
 # shop's site on the server's shared edge (nginx): the deploy copies it to /srv/edge/sites/shop.conf.
 # Your additions can limit requests with \`limit_req zone=opscrew_shop;\`.
 limit_req_zone $binary_remote_addr zone=opscrew_shop:1m rate=10r/s;
+
+# This app's own kamal-proxy, resolved in Docker's DNS so another stopped app never blocks reload.
+upstream shop-kamal-proxy {
+	zone shop-kamal-proxy 64k;
+	server shop-kamal-proxy:80 resolve max_fails=0;
+}
 
 server {
 	listen 8080;
@@ -450,7 +486,7 @@ server {
 	proxy_buffering off;
 	proxy_request_buffering off;
 	location / {
-		proxy_pass http://kamal-proxy;
+		proxy_pass http://shop-kamal-proxy;
 	}
 	# Your own additions (opscrew/proxy/additions.nginx).
 	include /etc/nginx/sites/shop.additions;

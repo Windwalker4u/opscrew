@@ -133,10 +133,11 @@ Before anything is written, design stops, saying what to change, when:
   A second app with no proxy chosen yet takes the server's; one whose plan names another
   (`target.edge`) is refused, naming both;
 - **the memory doesn't fit.** The server's memory, minus the memory limits of the first app and of
-  every other app there, OpsCrew's edge and the system, must hold the second app's components.
-  Design warns when less than 15% would stay free. Provision runs this check again before it plans
-  anything, so a memory limit raised by hand in the plan (`app.memoryMb`, or a worker's or a
-  service's) that no longer fits is refused before any change;
+  every other app there (including 32 MB for each additional app's own `kamal-proxy`), OpsCrew's
+  edge and the system, must hold the second app's components. Design warns when less than 15% would
+  stay free. Provision runs this check again before it plans anything, so a memory limit raised by
+  hand in the plan (`app.memoryMb`, or a worker's or a service's) that no longer fits is refused
+  before any change;
 - **the app needs a server-wide kernel setting**, which only the first app's server setup may change.
 
 Design also needs the second app's repository to have its GitHub remote, `origin`, and it reads
@@ -149,10 +150,16 @@ is in the middle of a [move](retarget.md).
 
 ## Who can reach what
 
-Both apps run on the server as the same `deploy` user, and that user can become root through
-Docker. So anyone who can change `blog`'s deploy workflow or its deploy key can reach `shop`'s data
-and secrets too. Design, and the approval of the host plan, say so plainly. Share a server only
-between apps the same people may change.
+At the Docker network level, each app is isolated on its own private `internal` network behind its
+own `kamal-proxy` container (32 MB): a compromised container in `blog` cannot connect directly to
+`shop`'s containers or databases, cannot reach the shared front proxy on `opscrew-edge`, and cannot
+reach `shop` or forge `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Host` through
+`blog`'s `kamal-proxy` (which knows only `blog`'s routes).
+
+At the server level, however, both apps still run as the same `deploy` user, and that user can
+become root through Docker. So anyone who can change `blog`'s deploy workflow or its deploy key can
+reach `shop`'s data and secrets too. Design, and the approval of the host plan, say so plainly.
+Share a server only between apps the same people may change.
 
 ## What the first app can no longer do
 

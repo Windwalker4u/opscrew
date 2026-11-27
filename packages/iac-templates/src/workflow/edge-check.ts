@@ -2,6 +2,7 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
 import {
   additionsPath,
+  appProxyAlias,
   EDGE_PROJECT,
   EDGE_PROXIES,
   type EdgeProxy,
@@ -69,12 +70,15 @@ const LETSENCRYPT_MOUNT = `-v ${CHECK}/letsencrypt:${LETSENCRYPT}:ro`;
  * the edge's network, which on the server's or the local runner is the running edge's, and answer
  * for kamal-proxy's name there too.
  */
-const CHECKER: Record<EdgeProxy, string> = {
-  caddy:
-    "run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile",
-  nginx: `run --rm --no-deps -T ${LETSENCRYPT_MOUNT} --entrypoint nginx nginx -t`,
-  openlitespeed: `run --rm --no-deps -T ${LETSENCRYPT_MOUNT} --entrypoint sh openlitespeed -c 'printf "127.0.0.1 kamal-proxy\\n" >> /etc/hosts && ${OPENLITESPEED_COMMAND.check}'`,
-};
+function checkerFor(proxy: EdgeProxy, app: string): string {
+  if (proxy === "caddy") {
+    return "run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile";
+  }
+  if (proxy === "nginx") {
+    return `run --rm --no-deps -T ${LETSENCRYPT_MOUNT} --entrypoint nginx nginx -t`;
+  }
+  return `run --rm --no-deps -T ${LETSENCRYPT_MOUNT} --entrypoint sh openlitespeed -c 'printf "127.0.0.1 ${appProxyAlias(app)} kamal-proxy\\n" >> /etc/hosts && ${OPENLITESPEED_COMMAND.check}'`;
+}
 
 /**
  * The deploy job's step before any upload: the proxy's own checker in its pinned image, through
@@ -138,7 +142,7 @@ export function edgeCheckStep(plan: DeployPlan, o: EdgeFiles): string[] {
     ...shared.map((file) => `    cp ${dir}/edge/sites/${file} ${CHECK}/sites/${file}`),
     ...files.flatMap((file) => [
       `    cp ${dir}/edge/sites/${file} ${CHECK}/sites/${app}.${site}`,
-      `    if ! docker compose -p opscrew-edge-check -f ${CHECK}/compose.yaml ${CHECKER[proxy]} < /dev/null; then`,
+      `    if ! docker compose -p opscrew-edge-check -f ${CHECK}/compose.yaml ${checkerFor(proxy, app)} < /dev/null; then`,
       `      echo ${shellQuote(checkFailed(plan, `${dir}/edge/sites/${file}`, o.additions))}`,
       "      exit 1",
       "    fi",
