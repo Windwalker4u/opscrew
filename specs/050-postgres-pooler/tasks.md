@@ -87,7 +87,7 @@
 ## The lead's wave
 
 - [x] T5090 (lead) A fresh review of the merged waves.
-- [ ] T5091 (lead) `/simplify` over the feature's diff.
+- [x] T5091 (lead) `/simplify` over the feature's diff.
 - [x] T5092 (lead) The live pass on the localhost target with `examples/laravel-app`: SC-5001's flat
   backend count over 100 signed-in requests, and nothing left behind. The results go into
   `docs/e2e-coverage.md`.

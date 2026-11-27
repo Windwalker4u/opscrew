@@ -219,7 +219,8 @@ export function drillCommand(plan: DeployPlan): string[] {
   const log = project.log;
   const label = `"label=com.docker.compose.project=${name}"`;
   const data = `/srv/data/${name}`;
-  const services = servicesOn(plan, APP_SERVER).map((service) => service.name);
+  const appServices = servicesOn(plan, APP_SERVER);
+  const services = appServices.map((service) => service.name);
   const serviceParts = parts.filter((part) => services.includes(part.name));
   const stopOnly = parts.filter((part) => !part.online).map((part) => part.name);
   const databases = parts.flatMap((part) => {
@@ -227,11 +228,11 @@ export function drillCommand(plan: DeployPlan): string[] {
     return count === undefined ? [] : [{ name: part.name, count }];
   });
   // The PostgreSQL parts with a pooler (050), which the copy's app reaches them through.
-  const pooled = servicesOn(plan, APP_SERVER).filter(
+  const pooled = appServices.filter(
     (service) => postgresPooler(service) && serviceParts.some((part) => part.name === service.name),
   );
   const memory = (part: string) => {
-    const service = servicesOn(plan, APP_SERVER).find((s) => s.name === part);
+    const service = appServices.find((s) => s.name === part);
     if (service === undefined) return 0;
     return service.memoryMb + (postgresPooler(service) ? POOLER_MEMORY_MB : 0);
   };
