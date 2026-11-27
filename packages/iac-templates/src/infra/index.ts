@@ -336,7 +336,11 @@ function thirdPartyEdgeRoot(
       appName: plan.app.name,
       ...(plan.environment?.name === undefined ? {} : { environmentName: plan.environment.name }),
       domain: plan.dns.domain,
-      ...(plan.dns.zone === undefined ? {} : { zone: plan.dns.zone }),
+      ...(plan.dns.zone !== undefined
+        ? { zone: plan.dns.zone }
+        : ctx.edge?.dnsZoneName !== undefined
+          ? { zone: ctx.edge.dnsZoneName }
+          : {}),
       www: plan.dns.www,
       proxied: plan.dns.proxied,
       manageDns: plan.dns.provider === id,

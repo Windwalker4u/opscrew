@@ -115,4 +115,21 @@ describe("Gcore origin-verification header plan & hash-bound apply", () => {
       [HEADER_NAME]: TOKEN_2,
     });
   });
+
+  it("matches existing header names case-insensitively so lower-cased responses plan noop or update", async () => {
+    const fake = fakeGcore({ [HEADER_NAME.toLowerCase()]: TOKEN_1, "X-Custom": "keep" }, true);
+    const noopPlan = await planGcoreOriginHeader(fake.client, {
+      resourceId: 505,
+      headerName: HEADER_NAME,
+      token: TOKEN_1,
+    });
+    expect(noopPlan.action).toBe("noop");
+
+    const updatePlan = await planGcoreOriginHeader(fake.client, {
+      resourceId: 505,
+      headerName: HEADER_NAME,
+      token: TOKEN_2,
+    });
+    expect(updatePlan.action).toBe("update");
+  });
 });

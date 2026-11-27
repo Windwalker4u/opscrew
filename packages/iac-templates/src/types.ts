@@ -53,15 +53,12 @@ export interface RenderContext {
      */
     oneTimePinIdentityProviderId?: string;
   };
-  /** Non-Cloudflare edge/DNS zone metadata (for example Bunny DNS zone id). */
+  /** Non-Cloudflare edge/DNS zone metadata (for example Bunny DNS zone id or Gcore zone name). */
   edge?: {
     /** Numeric DNS zone id when OpsCrew manages DNS records on a non-Cloudflare provider. */
     dnsZoneId?: number;
-  };
-  /** Gcore zone metadata when `dns.provider` is `"gcore"`. */
-  gcore?: {
-    /** Gcore DNS zone name (for example `example.com`) when OpsCrew manages DNS records in Gcore DNS. */
-    dnsZone?: string;
+    /** DNS zone name (for example `example.com`) looked up by the provider's connector. */
+    dnsZoneName?: string;
   };
   /**
    * Cloudflare's IP ranges (IPv4, then IPv6, from Cloudflare's API). When Cloudflare's proxy

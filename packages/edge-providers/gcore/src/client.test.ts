@@ -19,18 +19,21 @@ describe("gcoreClient", () => {
     const missing = gcoreClient({ apiToken: "  " });
     expect((await missing.verifyCredentials()).ok).toBe(false);
 
+    const seenUrls: string[] = [];
     const seenHeaders: Record<string, string>[] = [];
     const okClient = gcoreClient({
       apiToken: API_TOKEN,
-      fetch: (async (_url: string | URL, init?: RequestInit) => {
+      fetch: (async (url: string | URL, init?: RequestInit) => {
+        seenUrls.push(String(url));
         seenHeaders.push((init?.headers ?? {}) as Record<string, string>);
-        return jsonResponse({ zones: [] });
+        return jsonResponse([]);
       }) as unknown as FetchLike,
     });
     expect(await okClient.verifyCredentials()).toEqual({
       ok: true,
       message: "Gcore permanent API token verified.",
     });
+    expect(seenUrls[0]).toBe("https://api.gcore.com/cdn/resources?limit=1");
     expect(seenHeaders[0]?.Authorization).toBe(`APIKey ${API_TOKEN}`);
 
     const badClient = gcoreClient({
@@ -51,8 +54,16 @@ describe("gcoreClient", () => {
           zones: [{ name: "example.com" }, { name: "eu.example.com" }],
         })) as unknown as FetchLike,
     });
-    expect(await client.findDnsZone("api.eu.example.com")).toEqual({ name: "eu.example.com" });
-    expect(await client.findDnsZone("example.com")).toEqual({ name: "example.com" });
+    expect(await client.findDnsZone("api.eu.example.com")).toEqual({
+      id: 0,
+      domain: "eu.example.com",
+      name: "eu.example.com",
+    });
+    expect(await client.findDnsZone("example.com")).toEqual({
+      id: 0,
+      domain: "example.com",
+      name: "example.com",
+    });
     expect(await client.findDnsZone("other.org")).toBeUndefined();
 
     const malformed = gcoreClient({

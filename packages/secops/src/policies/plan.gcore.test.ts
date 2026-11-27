@@ -46,6 +46,7 @@ describe("Gcore SecOps policies and TLS reporting (036 PR 3)", () => {
                   type: "gcore_cdn_resource",
                   values: {
                     origin_protocol: "HTTPS",
+                    ssl_enabled: true,
                     options: [{ edge_cache_settings: [{ enabled: false }] }],
                   },
                 },
@@ -59,6 +60,7 @@ describe("Gcore SecOps policies and TLS reporting (036 PR 3)", () => {
     expect(blockingPolicyFailures(safe)).toEqual([]);
     expect(safe.find((r) => r.policyId === "gcore-cache-disabled")?.passed).toBe(true);
     expect(safe.find((r) => r.policyId === "gcore-origin-https")?.passed).toBe(true);
+    expect(safe.find((r) => r.policyId === "gcore-edge-https")?.passed).toBe(true);
 
     const leakyJson = {
       planned_values: {
@@ -72,6 +74,7 @@ describe("Gcore SecOps policies and TLS reporting (036 PR 3)", () => {
                   type: "gcore_cdn_resource",
                   values: {
                     origin_protocol: "HTTP",
+                    ssl_enabled: false,
                     options: [
                       {
                         edge_cache_settings: [{ enabled: true }],
@@ -90,6 +93,7 @@ describe("Gcore SecOps policies and TLS reporting (036 PR 3)", () => {
     const blockers = blockingPolicyFailures(leaky);
     expect(blockers.map((r) => r.policyId)).toEqual([
       "gcore-origin-https",
+      "gcore-edge-https",
       "gcore-no-secret-header-in-state",
     ]);
     expect(blockers.find((r) => r.policyId === "gcore-no-secret-header-in-state")?.severity).toBe(

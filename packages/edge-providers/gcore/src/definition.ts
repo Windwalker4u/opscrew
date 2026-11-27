@@ -49,6 +49,12 @@ export const definition: EdgeProviderDefinition = {
         ...(fetch === undefined ? {} : { fetch }),
         ...(redactor === undefined ? {} : { redactor }),
       }).verifyCredentials(),
+    lookupDnsZone: ({ apiKey, domain, fetch, redactor }) =>
+      gcoreClient({
+        apiToken: apiKey,
+        ...(fetch === undefined ? {} : { fetch }),
+        ...(redactor === undefined ? {} : { redactor }),
+      }).findDnsZone(domain),
     planOriginHeader: ({ apiKey, resourceId, headerName, token, fetch, redactor }) =>
       planGcoreOriginHeader(
         gcoreClient({

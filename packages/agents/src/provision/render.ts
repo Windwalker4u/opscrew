@@ -118,8 +118,8 @@ export async function deploymentRenderContext(
     github: { owner: string; repo: string };
     deployPublicKey: string;
     cloudflare: CloudflareSetup | undefined;
-    /** Non-Cloudflare edge/DNS zone metadata (for example Bunny DNS zone id). */
-    thirdPartyEdge?: { dnsZoneId?: number } | undefined;
+    /** Non-Cloudflare edge/DNS zone metadata (for example Bunny DNS zone id or Gcore zone name). */
+    thirdPartyEdge?: { dnsZoneId?: number; dnsZoneName?: string } | undefined;
     /** The server's address when known on this computer. */
     server?: ServerAddress | undefined;
     /** A server the user owns: see {@link OwnRenderInput}. */
@@ -161,8 +161,18 @@ export async function deploymentRenderContext(
     ...(others.length > 0 ? { otherAppDirs: others } : {}),
     ...(Object.keys(serverSshPorts).length > 0 ? { serverSshPorts } : {}),
     ...(input.dashboardsOnNetwork === true ? { dashboardsOnNetwork: true } : {}),
-    ...(input.thirdPartyEdge?.dnsZoneId !== undefined
-      ? { edge: { dnsZoneId: input.thirdPartyEdge.dnsZoneId } }
+    ...(input.thirdPartyEdge?.dnsZoneId !== undefined ||
+    input.thirdPartyEdge?.dnsZoneName !== undefined
+      ? {
+          edge: {
+            ...(input.thirdPartyEdge.dnsZoneId === undefined
+              ? {}
+              : { dnsZoneId: input.thirdPartyEdge.dnsZoneId }),
+            ...(input.thirdPartyEdge.dnsZoneName === undefined
+              ? {}
+              : { dnsZoneName: input.thirdPartyEdge.dnsZoneName }),
+          },
+        }
       : {}),
     ...(cloudflare
       ? {

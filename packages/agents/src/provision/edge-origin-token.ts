@@ -41,6 +41,7 @@ export interface ThirdPartyEdgeSetup {
   envVar: string;
   apiKey: string;
   dnsZoneId?: number;
+  dnsZoneName?: string;
 }
 
 const RawGeneratedObjectSchema = z.looseObject({});
@@ -171,6 +172,7 @@ export async function setupThirdPartyEdge(
     });
   }
   let dnsZoneId: number | undefined;
+  let dnsZoneName: string | undefined;
   if (plan.dns.provider === id && plan.dns.domain !== undefined) {
     const zone = await connector.lookupDnsZone?.({
       apiKey,
@@ -188,12 +190,14 @@ export async function setupThirdPartyEdge(
       );
     }
     dnsZoneId = zone.id;
+    dnsZoneName = zone.domain;
   }
   return {
     id,
     envVar,
     apiKey,
     ...(dnsZoneId === undefined ? {} : { dnsZoneId }),
+    ...(dnsZoneName === undefined ? {} : { dnsZoneName }),
   };
 }
 

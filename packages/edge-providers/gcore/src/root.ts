@@ -149,6 +149,17 @@ export function checkGcorePlan(resources: readonly EdgePlanResource[]): EdgePlan
         : 'Set origin_protocol = "HTTPS" on the Gcore CDN resource so edge-to-origin traffic is encrypted.',
       resource: cdn.address,
     });
+    const edgeHttps = cdn.values.ssl_enabled === true;
+    results.push({
+      id: "gcore-edge-https",
+      title: "Gcore CDN serves visitors over HTTPS with an edge certificate",
+      severity: "high",
+      passed: edgeHttps,
+      detail: edgeHttps
+        ? "Gcore CDN resource has ssl_enabled = true."
+        : "Set ssl_enabled = true (with a gcore_cdn_sslcert) on the Gcore CDN resource so HTTPS delivery works.",
+      resource: cdn.address,
+    });
     const staticHeaders = Array.isArray(opts?.static_request_headers)
       ? (opts?.static_request_headers[0] as Record<string, unknown> | undefined)
       : (opts?.static_request_headers as Record<string, unknown> | undefined);

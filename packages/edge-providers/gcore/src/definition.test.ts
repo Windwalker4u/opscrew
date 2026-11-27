@@ -24,18 +24,27 @@ describe("@opscrew/edge-provider-gcore", () => {
     expect(definition.terraform.root?.resourceIdOutput).toBe("gcore_cdn_resource_id");
     expect(typeof definition.secops?.checkPlan).toBe("function");
     expect(typeof definition.connector?.verifyCredentials).toBe("function");
+    expect(typeof definition.connector?.lookupDnsZone).toBe("function");
   });
 
-  it("renders a safe gcore-edge Terraform module with force_return 403 probes, cache off, HTTPS origin, and no static_request_headers", () => {
+  it("renders a safe gcore-edge Terraform module with automated LE SSL, gcore_cdn_client CNAME target, force_return 403 probes, cache off, HTTPS origin, and no static_request_headers", () => {
     const main = GCORE_EDGE_MODULE_FILES["main.tf"] ?? "";
-    expect(main).toContain('resource "gcore_cdn_origin_group" "this"');
+    expect(main).toContain('data "gcore_cdn_client" "this"');
+    expect(main).toContain('resource "gcore_cdn_origingroup" "this"');
+    expect(main).toContain('resource "gcore_cdn_sslcert" "this"');
+    expect(main).toContain("automated = true");
     expect(main).toContain('resource "gcore_cdn_resource" "this"');
     expect(main).toContain('origin_protocol     = "HTTPS"');
+    expect(main).toContain("ssl_enabled         = true");
+    expect(main).toContain("ssl_data            = gcore_cdn_sslcert.this[0].id");
     expect(main).toContain("edge_cache_settings {\n      enabled = false");
-    expect(main).toContain("ignore_query_string {\n      enabled = false");
-    expect(main).toContain('resource "gcore_cdn_resource_rule" "block_probes"');
+    expect(main).toContain("ignore_query_string {\n      enabled = true\n      value   = false");
+    expect(main).toContain("redirect_http_to_https {\n      enabled = true\n      value   = true");
+    expect(main).toContain('resource "gcore_cdn_rule" "block_probes"');
     expect(main).toContain("force_return {");
-    expect(main).toContain("status  = 403");
+    expect(main).toContain("code    = 403");
+    expect(main).toContain(`content = "\${data.gcore_cdn_client.this[0].cname}."`);
+    expect(main).not.toContain(`content = "\${gcore_cdn_resource.this[0].cname}."`);
     for (const part of ["\\.env", "\\.git/", "wp-admin", "wp-login", "xmlrpc", "phpmyadmin"]) {
       expect(main).toContain(part);
     }

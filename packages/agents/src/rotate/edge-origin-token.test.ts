@@ -165,6 +165,7 @@ describe("third-party edge setup and zero-downtime edge-origin-token rotation (0
       envVar: "BUNNYNET_API_KEY",
       apiKey: API_KEY,
       dnsZoneId: 777,
+      dnsZoneName: "example.com",
     });
     expect(deps.redactor.redact(`key=${API_KEY}`)).not.toContain(API_KEY);
 

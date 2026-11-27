@@ -81,7 +81,10 @@ export async function planGcoreOriginHeader(
   const headerName = input.headerName;
   const resource = await client.getCdnResource(resourceId);
   const current = resource.options?.staticRequestHeaders;
-  const existingValue = current?.value?.[headerName];
+  const existingEntry = Object.entries(current?.value ?? {}).find(
+    ([k]) => k.toLowerCase() === headerName.toLowerCase(),
+  );
+  const existingValue = existingEntry?.[1];
   const preserved = nonOpsCrewHeaders(current?.value, headerName);
   const tokenFingerprint = sha256Hex(input.token).slice(0, 12);
   const matches = current?.enabled === true && existingValue === input.token;

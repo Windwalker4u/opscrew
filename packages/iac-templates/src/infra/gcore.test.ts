@@ -82,11 +82,29 @@ describe("Gcore infrastructure rendering (036 PR 3)", () => {
     expect(tfvars.http_allowed_cidrs).toEqual(["0.0.0.0/0", "::/0"]);
 
     const moduleMain = byPath("modules/gcore-edge/main.tf");
+    expect(moduleMain).toContain('data "gcore_cdn_client" "this"');
+    expect(moduleMain).toContain('resource "gcore_cdn_origingroup" "this"');
+    expect(moduleMain).toContain('resource "gcore_cdn_sslcert" "this"');
     expect(moduleMain).toContain('resource "gcore_cdn_resource" "this"');
-    expect(moduleMain).toContain('resource "gcore_cdn_resource_rule" "block_probes"');
+    expect(moduleMain).toContain("ssl_enabled         = true");
+    expect(moduleMain).toContain('resource "gcore_cdn_rule" "block_probes"');
     expect(moduleMain).toContain("force_return {");
+    expect(moduleMain).toContain(`content = "\${data.gcore_cdn_client.this[0].cname}."`);
+    expect(moduleMain).not.toContain(`content = "\${gcore_cdn_resource.this[0].cname}."`);
     expect(moduleMain).not.toContain("static_request_headers");
     expect(moduleMain).not.toContain("X-OpsCrew-Origin-Token");
+  });
+
+  it("uses looked-up ctx.edge.dnsZoneName for subdomains when plan.dns.zone is omitted", () => {
+    const plan = DeployPlanSchema.parse({
+      ...makeGcorePlan({ dnsProvider: "gcore", domain: "app.example.com" }),
+      dns: { provider: "gcore", domain: "app.example.com", proxied: true, www: false },
+    });
+    const files = renderInfra(plan, { ...baseCtx(), edge: { dnsZoneName: "example.com" } });
+    const tfvars = JSON.parse(
+      files.find((f) => f.path.endsWith("/terraform.tfvars.json"))?.content ?? "{}",
+    ) as Record<string, unknown>;
+    expect(tfvars.gcore_dns_zone).toBe("example.com");
   });
 
   it("supports external DNS + Gcore edge (dns.provider: none, dns.edge: gcore) with manage_dns = false", () => {

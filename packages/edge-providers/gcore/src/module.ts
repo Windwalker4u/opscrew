@@ -79,28 +79,41 @@ variable "ipv6" {
 }
 `;
 
-const MAIN_TF = `# Gcore CDN origin group & resource: dynamic-app-safe defaults (edge caching disabled,
-# query strings preserved, HTTPS to origin, HTTP -> HTTPS redirect). The shared origin-verification
-# header is applied outside Terraform via the Gcore API so its secret never enters Terraform state
-# (ADR 0038 D6).
-resource "gcore_cdn_origin_group" "this" {
+const MAIN_TF = `# Gcore CDN origin group, automated Let's Encrypt certificate, and CDN resource: dynamic-app-safe
+# defaults (edge caching disabled, query strings preserved, HTTPS to origin, HTTP -> HTTPS
+# redirect, TLS 1.2+). The shared origin-verification header is applied outside Terraform via the
+# Gcore API so its secret never enters Terraform state (ADR 0038 D6).
+data "gcore_cdn_client" "this" {
+  count = var.manage_dns && var.proxied ? 1 : 0
+}
+
+resource "gcore_cdn_origingroup" "this" {
   count    = var.proxied ? 1 : 0
   name     = var.origin_group_name
   use_next = true
 
   origin {
-    source = var.origin_host
-    backup = false
+    source  = var.origin_host
+    enabled = true
+    backup  = false
   }
+}
+
+resource "gcore_cdn_sslcert" "this" {
+  count     = var.proxied ? 1 : 0
+  name      = "\${var.origin_group_name}-le"
+  automated = true
 }
 
 resource "gcore_cdn_resource" "this" {
   count               = var.proxied ? 1 : 0
   cname               = var.domain
   secondary_hostnames = var.www ? ["www.\${var.domain}"] : []
-  origin_group        = gcore_cdn_origin_group.this[0].id
+  origin_group        = gcore_cdn_origingroup.this[0].id
   origin_protocol     = "HTTPS"
   active              = true
+  ssl_enabled         = true
+  ssl_data            = gcore_cdn_sslcert.this[0].id
 
   options {
     edge_cache_settings {
@@ -108,35 +121,44 @@ resource "gcore_cdn_resource" "this" {
     }
 
     ignore_query_string {
-      enabled = false
+      enabled = true
+      value   = false
     }
 
     redirect_http_to_https {
       enabled = true
+      value   = true
+    }
+
+    tls_versions {
+      enabled = true
+      value   = ["TLSv1.2", "TLSv1.3"]
     }
   }
 }
 
 # Included on Gcore CDN Free tier (1 TB/month): blocks common secret and admin-panel probes at the edge.
-resource "gcore_cdn_resource_rule" "block_probes" {
+resource "gcore_cdn_rule" "block_probes" {
   count       = var.proxied && var.waf_custom_rules ? 1 : 0
   resource_id = gcore_cdn_resource.this[0].id
   name        = "OpsCrew block common probes"
   rule        = "^/(\\\\.env|\\\\.git/|wp-admin|wp-login\\\\.php|xmlrpc\\\\.php|phpmyadmin)"
   rule_type   = 0
+  weight      = 0
   active      = true
 
   options {
     force_return {
       enabled = true
-      status  = 403
+      code    = 403
       body    = "Forbidden"
     }
   }
 }
 
 # Gcore Managed DNS records (only when dns.provider is "gcore"): CNAME (flattened at apex by Gcore
-# DNS) pointing at the CDN resource when proxied; A/AAAA/CNAME to the server when DNS-only.
+# DNS) pointing at the account's Gcore CDN edge target (data.gcore_cdn_client.this[0].cname, e.g.
+# cl-xxxx.gcdn.co) when proxied; A/AAAA/CNAME to the server when DNS-only.
 resource "gcore_dns_zone_record" "cdn_cname" {
   count  = var.manage_dns && var.proxied ? 1 : 0
   zone   = var.dns_zone
@@ -145,7 +167,7 @@ resource "gcore_dns_zone_record" "cdn_cname" {
   ttl    = 300
 
   resource_record {
-    content = "\${gcore_cdn_resource.this[0].cname}."
+    content = "\${data.gcore_cdn_client.this[0].cname}."
   }
 }
 
@@ -157,7 +179,7 @@ resource "gcore_dns_zone_record" "www_cdn_cname" {
   ttl    = 300
 
   resource_record {
-    content = "\${gcore_cdn_resource.this[0].cname}."
+    content = "\${data.gcore_cdn_client.this[0].cname}."
   }
 }
 

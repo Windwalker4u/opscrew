@@ -71,11 +71,14 @@ traffic with an unpredictable custom request header rather than static firewall 
   `gcore_cdn_resource.options.static_request_headers` in Terraform, because Terraform would persist
   the secret in state. SecOps blocks any Terraform plan that enables `static_request_headers` in
   state.
-- **Reverse-proxy ordering:** On Caddy, nginx, and OpenLiteSpeed, every request missing the exact
-  `X-OpsCrew-Origin-Token` value receives **HTTP 403** before reaching `kamal-proxy` and before
-  trusting `X-Forwarded-For`. After verification, every proxy strips `X-OpsCrew-Origin-Token` so
-  your app never sees it. Caddy and nginx also forward Gcore's `X-Forwarded-For`; on OpenLiteSpeed,
-  OpsCrew strips untrusted `X-Forwarded-*` headers after verifying the origin token.
+- **Reverse-proxy ordering and client IP semantics:** On Caddy, nginx, and OpenLiteSpeed, every
+  request missing the exact `X-OpsCrew-Origin-Token` value receives **HTTP 403** before reaching
+  `kamal-proxy` and before trusting `X-Forwarded-For`. After verification, every proxy strips
+  `X-OpsCrew-Origin-Token` so your app never sees it. Because Gcore appends the connecting visitor's
+  IP to any incoming `X-Forwarded-For` header (rather than exposing a dedicated single-IP header),
+  apps that parse `X-Forwarded-For` should use the rightmost Gcore-appended hop rather than blindly
+  trusting an arbitrary leftmost client-supplied entry. On OpenLiteSpeed, OpsCrew strips untrusted
+  `X-Forwarded-*` headers after verifying the origin token.
 
 ## Zero-downtime rotation
 
@@ -95,8 +98,11 @@ pair.
 - **Dynamic-safe caching:** OpsCrew creates `gcore_cdn_resource` with
   `edge_cache_settings.enabled = false` and `ignore_query_string.enabled = false` so dynamic pages
   and query-parameterized endpoints are never cached unexpectedly.
+- **Automated edge TLS:** Terraform provisions a `gcore_cdn_sslcert` (`automated = true`, Let's
+  Encrypt) bound to `gcore_cdn_resource` (`ssl_enabled = true`, TLS 1.2/1.3) and points Gcore DNS
+  CNAME records at the account's CDN edge target (`data.gcore_cdn_client.this[0].cname`).
 - **Free probe blocking:** When `security.wafCustomRules: true`, Terraform creates a
-  `gcore_cdn_resource_rule` using `force_return` (`403 Forbidden`) blocking `/.env`, `/.git/`,
+  `gcore_cdn_rule` using `force_return` (`code = 403`, `Forbidden`) blocking `/.env`, `/.git/`,
   `/wp-admin`, `/wp-login.php`, `/xmlrpc.php`, and `/phpmyadmin` at the edge on the Free tier.
 
 ## What stays Cloudflare-only

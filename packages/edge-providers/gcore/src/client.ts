@@ -12,12 +12,18 @@ export const GCORE_API_BASE = "https://api.gcore.com";
 export const GCORE_API_TOKEN_URL = "https://portal.gcore.com/accounts/profile/api-tokens";
 
 const GcoreDnsZoneSchema = z.object({
+  id: z.number().int().optional(),
   name: z.string().min(1),
 });
 
 const GcoreDnsZoneListSchema = z.object({
   zones: z.array(GcoreDnsZoneSchema),
 });
+
+const GcoreCdnResourceListSchema = z.union([
+  z.array(z.unknown()),
+  z.object({ results: z.array(z.unknown()) }),
+]);
 
 const GcoreStaticRequestHeadersSchema = z.object({
   enabled: z.boolean().default(false),
@@ -34,7 +40,7 @@ const GcoreCdnResourceSchema = z.object({
     .optional(),
 });
 
-export type GcoreDnsZone = { name: string };
+export type GcoreDnsZone = { id: number; domain: string; name: string };
 export type GcoreCdnResource = z.infer<typeof GcoreCdnResourceSchema>;
 
 export interface GcoreClientDeps {
@@ -126,7 +132,7 @@ export function gcoreClient(deps: GcoreClientDeps): GcoreClient {
         };
       }
       try {
-        const res = await fetchImpl(`${baseUrl}/dns/v2/zones?limit=1`, {
+        const res = await fetchImpl(`${baseUrl}/cdn/resources?limit=1`, {
           method: "GET",
           headers: { Authorization: `APIKey ${apiToken}`, Accept: "application/json" },
         });
@@ -142,7 +148,7 @@ export function gcoreClient(deps: GcoreClientDeps): GcoreClient {
             message: `Gcore API answered HTTP ${res.status} while verifying GCORE_PERMANENT_API_TOKEN.`,
           };
         }
-        await readJson(res, GcoreDnsZoneListSchema, "DNS zone list");
+        await readJson(res, GcoreCdnResourceListSchema, "CDN resource list");
         return { ok: true, message: "Gcore permanent API token verified." };
       } catch (error) {
         return {
@@ -165,7 +171,9 @@ export function gcoreClient(deps: GcoreClientDeps): GcoreClient {
         })
         .sort((a, b) => b.name.length - a.name.length);
       const best = matches[0];
-      return best === undefined ? undefined : { name: best.name };
+      return best === undefined
+        ? undefined
+        : { id: best.id ?? 0, domain: best.name, name: best.name };
     },
 
     async getCdnResource(resourceId: number): Promise<GcoreCdnResource> {
