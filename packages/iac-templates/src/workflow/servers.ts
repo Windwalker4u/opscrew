@@ -13,6 +13,16 @@ export function serverDeploySecrets(name: string): { host: string; knownHosts: s
   return { host: `${server}_HOST`, knownHosts: `${server}_KNOWN_HOSTS` };
 }
 
+/**
+ * The GitHub Actions secrets of a copy server `name`'s app environment files (`app.env`, and
+ * `worker.db.env` beside a PostgreSQL pooler when workers run there), before `deploySecretName`'s
+ * prefix: `OPSCREW_SERVER_<NAME>_APP_ENV` and `OPSCREW_SERVER_<NAME>_WORKER_DB_ENV` (033).
+ */
+export function copyServerEnvSecrets(name: string): { appEnv: string; workerDbEnv: string } {
+  const server = `OPSCREW_SERVER_${name.toUpperCase().replaceAll("-", "_")}`;
+  return { appEnv: `${server}_APP_ENV`, workerDbEnv: `${server}_WORKER_DB_ENV` };
+}
+
 /** True when `network.publicSsh` is `false`: SSH answers only on the private network. */
 export function publicSshClosed(plan: DeployPlan): boolean {
   return plan.network?.publicSsh === false;

@@ -318,7 +318,10 @@ function serve(site: NginxSite, o: { hsts: boolean; h3: boolean }): string[] {
     "\tproxy_request_buffering off;",
     "\tlocation / {",
     ...(site.loadBalance !== undefined && site.loadBalance.upstreams.length > 0
-      ? ["\t\tproxy_next_upstream error timeout http_502 http_503 http_504;"]
+      ? [
+          "\t\tproxy_connect_timeout 3s;",
+          "\t\tproxy_next_upstream error timeout http_502 http_503 http_504;",
+        ]
       : []),
     `\t\tproxy_pass http://${appProxyAlias(site.app)};`,
     "\t}",

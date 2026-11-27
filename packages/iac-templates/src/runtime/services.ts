@@ -366,6 +366,9 @@ function siteBlock(site: CaddySite, hosts: readonly string[], first: readonly st
     lb !== undefined && lb.upstreams.length > 0
       ? [
           `\t\tlb_policy ${lb.policy}`,
+          ...(site.versionDir === undefined
+            ? ["\t\tlb_try_duration 5s", "\t\tlb_try_interval 250ms"]
+            : []),
           `\t\thealth_uri ${lb.healthPath}`,
           "\t\thealth_interval 5s",
           "\t\thealth_timeout 2s",

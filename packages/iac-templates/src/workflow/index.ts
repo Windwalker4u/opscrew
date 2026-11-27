@@ -3,6 +3,7 @@
 import { OpsCrewError } from "@opscrew/core";
 import {
   APP_SERVER,
+  appCopyServers,
   type DeployPlan,
   type ExtraServer,
   isHostingTarget,
@@ -48,7 +49,7 @@ import {
   PORTAINER_DEPLOY_SECRETS_NEW,
   renderPortainerWorkflow,
 } from "./portainer";
-import { publicSshClosed, serverDeploySecrets } from "./servers";
+import { copyServerEnvSecrets, publicSshClosed, serverDeploySecrets } from "./servers";
 import {
   appFlag,
   block,
@@ -92,6 +93,9 @@ import {
 } from "./snapshots";
 import {
   appHoldCommands,
+  copyServerPrepullCommands,
+  copyServerRollbackCommands,
+  copyServerSwitchCommands,
   DATABASE_CHANGED,
   dockerConfig,
   type EdgeFiles,
@@ -102,6 +106,7 @@ import {
   MOVE_COPIED_NOTICE,
   MOVE_WAITING_NOTICE,
   OTHERS_HELD,
+  processServices,
   RESTORE_HELD,
   rollbackCommands,
   runningCommands,
@@ -122,7 +127,7 @@ export {
   PORTAINER_DEPLOY_SECRETS_NEW,
   portainerHealthUrl,
 } from "./portainer";
-export { serverDeploySecrets } from "./servers";
+export { copyServerEnvSecrets, serverDeploySecrets } from "./servers";
 export {
   buildRunner,
   DEPLOY_SECRETS,
@@ -157,6 +162,9 @@ export {
   snapshotParts,
 } from "./snapshots";
 export {
+  copyServerPrepullCommands,
+  copyServerRollbackCommands,
+  copyServerSwitchCommands,
   DATABASE_CHANGED,
   type EdgeFiles,
   OTHERS_HELD,
@@ -580,6 +588,25 @@ function appEnvFiles(plan: DeployPlan): EnvFile[] {
 }
 
 /**
+ * The app env files a copy server `server` receives (`app.env`, plus `worker.db.env` beside a
+ * PostgreSQL pooler when workers run on `server`), each from its per-server deploy secret (033).
+ */
+function copyServerEnvFiles(plan: DeployPlan, server: string): EnvFile[] {
+  const secrets = copyServerEnvSecrets(server);
+  return [
+    { file: "app.env", secret: secrets.appEnv },
+    ...(hasWorkerDbEnv(plan) && processServices(plan, server).length > 0
+      ? [{ file: WORKER_DB_ENV.file, secret: secrets.workerDbEnv }]
+      : []),
+  ];
+}
+
+/** Valid GitHub Actions step `id` for the copy server `server`. */
+function copyStepId(server: string): string {
+  return `copy_${server.replaceAll("-", "_")}`;
+}
+
+/**
  * The masking file Grafana Alloy reads on `server`: on the app's server with Grafana Cloud on
  * (`observability.grafanaCloud.enabled`) or monitoring on, from {@link appEnvFiles}; on an extra
  * server with monitoring on, from the env files it receives (`envFiles`). It is `mask.re` in the
@@ -650,7 +677,12 @@ export function maskFileScript(
   dir: string = appDir(plan),
 ): string {
   const envFiles =
-    server === APP_SERVER ? appEnvFiles(plan) : serviceEnvFiles(servicesRunningOn(plan, server));
+    server === APP_SERVER
+      ? appEnvFiles(plan)
+      : [
+          ...serviceEnvFiles(servicesRunningOn(plan, server)),
+          ...(appCopyServers(plan).includes(server) ? copyServerEnvFiles(plan, server) : []),
+        ];
   const lines = maskFileWrite(plan, server, envFiles, dir, HERE);
   if (lines.length === 0) return "";
   const script = [
@@ -811,10 +843,12 @@ function rollbackStep(
   reach: Reach,
   localhost: LocalhostSite | undefined,
   others: readonly string[],
+  copies: readonly string[] = [],
 ): string[] {
   const hold = (command: string) => `${reach.sh} -s -- ${command} < "$RUNNER_TEMP/opscrew-hold.sh"`;
   const script = '"$RUNNER_TEMP/opscrew-rollback-$server.sh"';
   const valid = `[[ "$MODE" == rollback && "\${IMAGE:-}" =~ ${DIGEST_REF_PATTERN} && "\${RUNNING:-}" =~ ${DIGEST_REF_PATTERN} ]]`;
+  const allExtra = [...new Set([...others, ...copies])];
   const putBack =
     others.length === 0
       ? []
@@ -872,17 +906,43 @@ function rollbackStep(
           `      ${hold("forget")} || true`,
           "    fi",
         ];
+  const copyRollback =
+    copies.length === 0
+      ? []
+      : [
+          ...otherServerShell(ctx, copies),
+          ...copies.flatMap((name) => [
+            `    cat > "$RUNNER_TEMP/opscrew-copy-rollback-${name}.sh" <<'REMOTE'`,
+            ...remote(copyServerRollbackCommands(plan, name)),
+          ]),
+          `    if [[ "\${IMAGE:-}" =~ ${DIGEST_REF_PATTERN} ]]; then`,
+          `      for server in ${[...copies].reverse().join(" ")}; do`,
+          '        copy_out="$(server_sh "$server" "$IMAGE" < "$RUNNER_TEMP/opscrew-copy-rollback-$server.sh")" || copy_out=failed',
+          '        case "$copy_out" in',
+          '          restored) echo "Restored previous version on copy server $server." ;;',
+          "          unchanged | no-previous | held*) ;;",
+          `          *) echo "::error::OpsCrew could not restore the previous version on the copy server $server. Connect to $server and run \\\`docker compose ps\\\` in ${appDir(plan)}." ;;`,
+          "        esac",
+          "      done",
+          "    fi",
+        ];
   // A cancel between the change on the other servers and the start step skips the start step.
   const otherOutcomes =
     others.length === 0
       ? ""
       : " || steps.others.outcome == 'failure' || steps.others.outcome == 'cancelled' || (steps.others.outcome == 'success' && steps.start.outcome == 'skipped')";
+  const copyOutcomes = copies
+    .map(
+      (server) =>
+        ` || steps.${copyStepId(server)}.outcome == 'failure' || steps.${copyStepId(server)}.outcome == 'cancelled'`,
+    )
+    .join("");
   return [
     "- name: Roll back to the previous version",
-    `  if: (failure() || cancelled()) && (steps.start.outcome == 'failure' || steps.start.outcome == 'cancelled' || steps.health.outcome == 'failure'${otherOutcomes})`,
+    `  if: (failure() || cancelled()) && (steps.start.outcome == 'failure' || steps.start.outcome == 'cancelled' || steps.health.outcome == 'failure'${otherOutcomes}${copyOutcomes})`,
     "  env:",
     ...reach.env,
-    ...(others.length === 0 ? [] : otherServersEnv(plan, others)),
+    ...(allExtra.length === 0 ? [] : otherServersEnv(plan, allExtra)),
     `    IMAGE: ${imageOutput(plan, "image")}`,
     MODE_ENV,
     ...(others.length === 0 ? [] : [RUNNING_ENV]),
@@ -896,6 +956,7 @@ function rollbackStep(
     `    if [[ "\${IMAGE:-}" =~ ${DIGEST_REF_PATTERN} ]]; then`,
     `      outcome="$(${reach.sh} -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"`,
     "    fi",
+    ...copyRollback,
     ...resume,
     '    case "$MODE:$outcome" in',
     // A restore or a rotation holds the app: the rollback script changed nothing, nor did the start
@@ -1386,11 +1447,13 @@ function extraServerSteps(
   ctx: RuntimeContext,
   snapshotting: readonly string[],
 ): string[] {
-  const servers = (plan.servers ?? []).filter(
-    (server) => servicesRunningOn(plan, server.name).length > 0,
+  const copies = appCopyServers(plan);
+  const active = (plan.servers ?? []).filter(
+    (server) => servicesRunningOn(plan, server.name).length > 0 || copies.includes(server.name),
   );
-  if (servers.length === 0) return [];
-  const knownHosts = servers.map((server) => serverDeploySecrets(server.name).knownHosts);
+  if (active.length === 0) return [];
+  const serviceServers = active.filter((server) => servicesRunningOn(plan, server.name).length > 0);
+  const knownHosts = active.map((server) => serverDeploySecrets(server.name).knownHosts);
   const dir = appDir(plan);
   const rendered = renderRuntimeFiles(plan).map((file) => file.path);
   return [
@@ -1405,14 +1468,16 @@ function extraServerSteps(
     `    chmod 600 ${serversFile("key")}`,
     `    printf '%s\\n' ${knownHosts.map((name) => `"$${name}"`).join(" ")} > ${serversFile("known_hosts")}`,
     `    : > ${serversFile("config")}`,
-    ...servers.flatMap((server) => {
+    ...serviceServers.flatMap((server) => {
       const port = ctx.serverSshPorts?.[server.name];
       checkSshPort(port);
+      const isCopy = copies.includes(server.name);
       const services = servicesOn(plan, server.name);
       const offsite = offsiteEnvFiles(plan, server.name);
-      const envFiles = [...serviceEnvFiles(services), ...offsite];
+      const copyEnv = isCopy ? copyServerEnvFiles(plan, server.name) : [];
+      const envFiles = [...serviceEnvFiles(services), ...copyEnv, ...offsite];
       // The mask also holds a moving service's old copy's values while it still runs there.
-      const maskFiles = serviceEnvFiles(servicesRunningOn(plan, server.name));
+      const maskFiles = [...serviceEnvFiles(servicesRunningOn(plan, server.name)), ...copyEnv];
       const mask = maskFileWrite(plan, server.name, maskFiles, dir, OVER_SSH);
       const folders = services
         .map((service) => `${runtimeDir(plan)}/services/${service.name}`)
@@ -1423,7 +1488,11 @@ function extraServerSteps(
         "  env:",
         `    HOST: ${extraServerHost(plan, server)}`,
         ...envFileEnv(plan, mask.length > 0 ? [...maskFiles, ...offsite] : envFiles),
-        ...(release ? [`    IMAGE: ${imageOutput(plan, "image")}`, RUNNING_ENV, MODE_ENV] : []),
+        ...(release
+          ? [`    IMAGE: ${imageOutput(plan, "image")}`, RUNNING_ENV, MODE_ENV]
+          : isCopy
+            ? [`    IMAGE: ${imageOutput(plan, "image")}`]
+            : []),
         "  run: |",
         "    set -euo pipefail",
         // The server's shell reads the arguments again: only checked words reach it.
@@ -1438,7 +1507,9 @@ function extraServerSteps(
               ],
               4,
             )
-          : []),
+          : isCopy
+            ? block(CHECK_IMAGE, 4)
+            : []),
         `    ssh_opts=(-i ${serversFile("key")} -o UserKnownHostsFile=${serversFile("known_hosts")} -F ${serversFile("config")} ${SSH_OPTS_BASE}${portOption(port)})`,
         `    ${OVER_SSH(`mkdir -p ${folders.length === 0 ? dir : `${dir}/services`}`)}`,
         `    scp "\${ssh_opts[@]}" ${serverComposePath(plan, server.name)} "deploy@\${HOST}:${dir}/compose.yaml"`,
@@ -1453,11 +1524,92 @@ function extraServerSteps(
         release
           ? // `$RUNNING` last: ssh drops it when it is empty (a first deploy).
             `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" "$RUNNING" <<'REMOTE'`
-          : `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s <<'REMOTE'`,
+          : isCopy
+            ? `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'`
+            : `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s <<'REMOTE'`,
         ...remote(serverCommands(plan, server.name, initStepsFor(plan, server.name))),
       ];
     }),
   ];
+}
+
+/**
+ * Prepares each copy server (`appCopyServers`) and pre-pulls the new `$IMAGE` before `APP_SERVER`
+ * runs migrations or switches traffic (033): if any copy server is unreachable or cannot pull the
+ * image, the deploy stops cleanly with zero changes to the database or live traffic.
+ */
+function copyPrepullSteps(
+  plan: DeployPlan,
+  ctx: RuntimeContext,
+  copies: readonly string[],
+): string[] {
+  if (copies.length === 0) return [];
+  const dir = appDir(plan);
+  return copies.flatMap((name) => {
+    const server = (plan.servers ?? []).find((s) => s.name === name);
+    if (server === undefined) return [];
+    const port = ctx.serverSshPorts?.[name];
+    checkSshPort(port);
+    const hasServices = servicesRunningOn(plan, name).length > 0;
+    const envFiles = hasServices ? [] : copyServerEnvFiles(plan, name);
+    const mask = hasServices ? [] : maskFileWrite(plan, name, envFiles, dir, OVER_SSH);
+    return [
+      `- name: Prepare and pre-pull on copy server ${name}`,
+      "  env:",
+      `    HOST: ${extraServerHost(plan, server)}`,
+      ...envFileEnv(plan, envFiles),
+      `    IMAGE: ${imageOutput(plan, "image")}`,
+      "    REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+      "  run: |",
+      "    set -euo pipefail",
+      ...block(CHECK_IMAGE, 4),
+      `    ssh_opts=(-i ${serversFile("key")} -o UserKnownHostsFile=${serversFile("known_hosts")} -F ${serversFile("config")} ${SSH_OPTS_BASE}${portOption(port)})`,
+      ...(hasServices
+        ? []
+        : [
+            `    ${OVER_SSH(`mkdir -p ${dir}`)}`,
+            `    scp "\${ssh_opts[@]}" ${serverComposePath(plan, name)} "deploy@\${HOST}:${dir}/compose.yaml"`,
+            ...envFileWrites(envFiles, dir, OVER_SSH),
+            ...mask.map((line) => `    ${line}`),
+          ]),
+      `    printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=${dockerConfig(plan)} docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"`,
+      `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'`,
+      ...remote(copyServerPrepullCommands(plan, name)),
+    ];
+  });
+}
+
+/**
+ * Serial 1-by-1 rolling deploy steps across all copy servers (`appCopyServers`: web copies first
+ * in `plan.app.servers` order, then worker-only copies), run after `APP_SERVER`'s `start` step
+ * succeeds (033). Each server switches and passes its own health check before the next starts.
+ */
+function copySwitchSteps(
+  plan: DeployPlan,
+  ctx: RuntimeContext,
+  copies: readonly string[],
+): string[] {
+  if (copies.length === 0) return [];
+  return copies.flatMap((name) => {
+    const server = (plan.servers ?? []).find((s) => s.name === name);
+    if (server === undefined) return [];
+    const port = ctx.serverSshPorts?.[name];
+    checkSshPort(port);
+    return [
+      `- id: ${copyStepId(name)}`,
+      `  name: Deploy to copy server ${name}`,
+      "  if: steps.start.outputs.waiting != 'true' && steps.start.outputs.moved != 'true'",
+      "  env:",
+      `    HOST: ${extraServerHost(plan, server)}`,
+      `    IMAGE: ${imageOutput(plan, "image")}`,
+      "  run: |",
+      "    set -euo pipefail",
+      ...block(CHECK_IMAGE, 4),
+      `    ssh_opts=(-i ${serversFile("key")} -o UserKnownHostsFile=${serversFile("known_hosts")} -F ${serversFile("config")} ${SSH_OPTS_BASE}${portOption(port)})`,
+      `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'`,
+      ...remote(copyServerSwitchCommands(plan, name)),
+    ];
+  });
 }
 
 /**
@@ -1645,12 +1797,16 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
     return publicSshClosed(plan) ? [names.knownHosts] : [names.host, names.knownHosts];
   });
   if (extra.length > 0 && deploysInPlace(plan)) extra.unshift(DEPLOY_SECRETS.sshKey);
+  const copyEnvSecrets = appCopyServers(plan).flatMap((server) =>
+    copyServerEnvFiles(plan, server).map((env) => env.secret),
+  );
   return [
     ...connection,
     ...extra,
     DEPLOY_SECRETS.appEnv,
     ...(hasReleaseDbEnv(plan) ? [RELEASE_DB_ENV.secret] : []),
     ...(hasWorkerDbEnv(plan) ? [WORKER_DB_ENV.secret] : []),
+    ...copyEnvSecrets,
     ...enabledServices(plan).map(({ name }) => serviceEnvSecret(name)),
     ...(snapshotOffsiteOf(plan) !== undefined ? [OFFSITE_ENV_SECRET] : []),
     ...(tunnel ? [] : [DEPLOY_SECRETS.originTls]),
@@ -1776,6 +1932,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
   // The extra servers whose data a rollback changes need the app's server's version first.
   const others = rollbackServers(plan);
   const running = runningServers(plan);
+  const copies = appCopyServers(plan);
   const local: LocalEdge | undefined =
     plan.target.provider === "localhost"
       ? { hostname: localhostSite(ctx.localhost).hostname, port: plan.target.ports.https }
@@ -1795,10 +1952,12 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     ...edgeCheckStep(plan, edgeFiles),
     ...(early ? [...connect, ...outgoingStep(plan, reach)] : []),
     ...extraServerSteps(plan, ctx, releaseSnapshotServers(plan)),
+    ...copyPrepullSteps(plan, ctx, copies),
     ...(early ? [] : connect),
     ...setup,
     ...(others.length > 0 ? othersStep(plan, ctx, reach, others) : []),
     ...startStep(plan, edgeFiles, reach, others),
+    ...copySwitchSteps(plan, ctx, copies),
     "- id: health",
     "  name: Check that the app is healthy",
     // A move to the server started only the app's services: the app starts after the copy.
@@ -1812,7 +1971,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     // With the origin certificate a failed handshake has nothing to do with Let's Encrypt.
     ...healthScript(plan, edgeServesTls(plan, sshHostname(plan)) && !edgeFiles.originTls, local),
     ...rolledBackStep(plan),
-    ...rollbackStep(plan, ctx, reach, edgeFiles.localhost, others),
+    ...rollbackStep(plan, ctx, reach, edgeFiles.localhost, others, copies),
     ...(others.length > 0 ? forgetHoldStep(reach) : []),
     ...(running.length > 0 ? runningStep(plan, ctx, reach, running) : []),
   ];

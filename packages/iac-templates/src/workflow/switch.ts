@@ -1,6 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
 import {
   APP_SERVER,
+  appCopyServers,
   type DeployPlan,
   type ImageBuilder,
   poolerName,
@@ -8,6 +9,7 @@ import {
   servicesOn,
 } from "@opscrew/plan-schema";
 import {
+  APP_COPY_PROXY_PORT,
   APP_KAMAL_PROXY_SERVICE,
   APPS_DIR,
   additionsPath,
@@ -36,6 +38,8 @@ import {
 } from "../edge/nginx";
 import { OPENLITESPEED_SITE_FILES } from "../edge/openlitespeed";
 import { hostSettingsServices, siteHosts } from "../runtime";
+import { servicesRunningOn } from "../runtime/move";
+import { privateAddress } from "../runtime/network";
 import { shellQuote } from "../runtime/services";
 import { runtimeDir } from "../runtime-dir";
 import { migrationDown, migrationRecord } from "./migrations";
@@ -308,10 +312,11 @@ function builderHint(plan: DeployPlan): string {
  * one-shot containers that set their host kernel settings (named here, since `--no-deps` starts no
  * dependency), then each PostgreSQL's pooler (050).
  */
-function steadyServices(plan: DeployPlan): string[] {
-  const services = servicesOn(plan, APP_SERVER);
+function steadyServices(plan: DeployPlan, server: string = APP_SERVER): string[] {
+  const services =
+    server === APP_SERVER ? servicesOn(plan, APP_SERVER) : servicesRunningOn(plan, server);
   return [
-    ...hostSettingsServices(plan),
+    ...hostSettingsServices(plan, server),
     ...services.map((service) => service.name),
     ...services.filter(postgresPooler).map(poolerName),
   ];
@@ -370,11 +375,20 @@ function serviceInit(
   ]);
 }
 
-/** The Compose services of the enabled workers, and `cron` when a cron job is enabled. */
-export function processServices(plan: DeployPlan): string[] {
+/**
+ * The Compose services of the enabled workers on `server` (all enabled workers on `APP_SERVER`,
+ * plus `cron` when a cron job is enabled; on a copy server, only workers placed there, never `cron`).
+ */
+export function processServices(plan: DeployPlan, server: string = APP_SERVER): string[] {
   return [
-    ...plan.processes.workers.filter((worker) => worker.enabled).map((worker) => worker.name),
-    ...(hasCronJobs(plan) ? ["cron"] : []),
+    ...plan.processes.workers
+      .filter(
+        (worker) =>
+          worker.enabled &&
+          (server === APP_SERVER ? true : (worker.servers?.includes(server) ?? false)),
+      )
+      .map((worker) => worker.name),
+    ...(server === APP_SERVER && hasCronJobs(plan) ? ["cron"] : []),
   ];
 }
 
@@ -1764,6 +1778,8 @@ export function serverCommands(
   init: readonly ServiceInitStep[],
 ): string[] {
   const release = releaseSnapshotOn(plan, server);
+  const isCopy = appCopyServers(plan).includes(server);
+  const steady = isCopy ? steadyServices(plan, server) : [];
   return [
     ...SCRIPT_ROOTS,
     "set -eu",
@@ -1779,11 +1795,24 @@ export function serverCommands(
           `  echo ${shellQuote(`::error::The deploy step of the server ${server} was given no image digests or mode it can use, so nothing changed there. Run the workflow again.`)}`,
           "  exit 1",
           "fi",
+          ...(isCopy ? ['export APP_IMAGE="$target"'] : []),
         ]
-      : []),
-    "docker compose pull",
+      : isCopy
+        ? [
+            'target="${1:-}"',
+            ...IMAGE_REF,
+            'if [ -z "$target" ] || ! image_ref "$target"; then',
+            `  echo ${shellQuote(`::error::The deploy step of the server ${server} was given no image digest it can use, so nothing changed there. Run the workflow again.`)}`,
+            "  exit 1",
+            "fi",
+            'export APP_IMAGE="$target"',
+          ]
+        : []),
+    ...(isCopy ? [`docker compose pull ${steady.join(" ")}`] : ["docker compose pull"]),
     ...(release ? serverSnapshotStep(plan, server) : []),
-    "docker compose up -d --wait --remove-orphans",
+    ...(isCopy
+      ? [`docker compose up -d --no-deps --wait ${steady.join(" ")}`]
+      : ["docker compose up -d --wait --remove-orphans"]),
     ...portRepair(plan, server),
     ...serviceInit(plan, init, initLog(plan), server),
     ...snapshotScheduleLines(plan, server),
@@ -2199,5 +2228,222 @@ function databaseBack(
     '  echo "$result"',
     "  exit 0",
     "fi",
+  ];
+}
+
+/**
+ * Ensures the copy server's own `app-proxy` container is running and bound to its WireGuard
+ * address on {@link APP_COPY_PROXY_PORT}, recreating it once if Docker started before WireGuard
+ * was up (same resilience pattern as {@link portRepair}).
+ */
+function ensureCopyAppProxy(plan: DeployPlan, server: string): string[] {
+  const wgIp = privateAddress(plan, server);
+  const binding = `${wgIp}:${APP_COPY_PROXY_PORT}`;
+  const recreated = `::warning::The ${APP_KAMAL_PROXY_SERVICE} service on the server ${server} was running without its port ${binding} on the private network (Docker starts it so when the network was not up yet), so OpsCrew recreated it.`;
+  const failed = `::error::The ${APP_KAMAL_PROXY_SERVICE} service on the server ${server} is still not published on ${binding} after OpsCrew recreated it, so the deploy stopped. Check that the private network is up on that server (opscrew status), then deploy again.`;
+  return [
+    `docker compose up -d --no-deps ${APP_KAMAL_PROXY_SERVICE}`,
+    `if [ "$(docker compose port ${APP_KAMAL_PROXY_SERVICE} 80 2> /dev/null)" != ${shellQuote(binding)} ]; then`,
+    `  echo ${shellQuote(recreated)}`,
+    `  docker compose up -d --force-recreate --no-deps ${APP_KAMAL_PROXY_SERVICE}`,
+    `  if [ "$(docker compose port ${APP_KAMAL_PROXY_SERVICE} 80 2> /dev/null)" != ${shellQuote(binding)} ]; then`,
+    `    echo ${shellQuote(failed)}`,
+    "    exit 1",
+    "  fi",
+    "fi",
+  ];
+}
+
+/**
+ * Switches traffic to a copy of `$APP_IMAGE` on the copy server `server` (033), using only its
+ * own WireGuard-bound `app-proxy` (no shared edge, no `opscrew-edge` network, no OpenLiteSpeed
+ * cache purge).
+ */
+export function switchCopyApp(
+  plan: DeployPlan,
+  server: string,
+  hosts: string,
+  failed: readonly string[],
+  onExit: readonly string[] = [],
+): string[] {
+  const { strategy, drainSeconds } = plan.deploy;
+  const app = plan.app.name;
+  const deployArgs = (target: string) =>
+    `deploy ${app} --target ${target}${hosts} --health-check-path ${shellQuote(healthPath(plan))} --deploy-timeout ${DEPLOY_TIMEOUT_SECONDS}s --drain-timeout ${drainSeconds}s --target-timeout ${TARGET_TIMEOUT_SECONDS}s`;
+  const kamal = [
+    'name="$(docker inspect --format \'{{.Name}}\' "$new")"',
+    `if ! ${kamalProxy(deployArgs(`"\${name#/}:${plan.app.port}"`))}; then`,
+    ...failed.map((line) => `  ${line}`),
+    '  docker rm -f "$new" > /dev/null',
+    "  exit 1",
+    "fi",
+  ];
+  if (strategy === "recreate") {
+    const pause = `${kamalProxy(`pause ${app} --drain-timeout ${drainSeconds}s --max-pause ${MAX_PAUSE_SECONDS}s`)} > /dev/null 2>&1 || true`;
+    const resume = `${kamalProxy(`resume ${app}`)} > /dev/null 2>&1 || true`;
+    const trap = [resume, ...onExit].join("; ");
+    return [
+      ...ensureCopyAppProxy(plan, server),
+      `trap '${trap}' EXIT`,
+      pause,
+      WRITE_ENV,
+      "docker compose up -d --no-deps app",
+      'new="$(docker compose ps -aq app)"',
+      ...kamal,
+      kamalProxy(`resume ${app}`),
+    ];
+  }
+  return [
+    ...ensureCopyAppProxy(plan, server),
+    "old=\"$(docker compose ps -aq app | tr '\\n' ' ')\"",
+    'docker compose up -d --no-deps --no-recreate --scale "app=$(( $(echo $old | wc -w) + 1 ))" app',
+    'new=""',
+    "for id in $(docker compose ps -aq app); do",
+    '  case " $old " in *" $id "*) ;; *) new="$id" ;; esac',
+    "done",
+    ...kamal,
+    WRITE_ENV,
+    "for id in $old; do",
+    '  docker stop "$id" > /dev/null',
+    '  docker rm "$id" > /dev/null',
+    "done",
+  ];
+}
+
+/**
+ * The pre-pull script on the copy server `server` (033, POSIX sh): logs out of the app's own
+ * Docker settings on exit, validates `$1` as a GHCR digest ref, and pulls the app image (plus
+ * `app-proxy` on web copies) before `APP_SERVER` runs any migration or switches traffic.
+ */
+export function copyServerPrepullCommands(plan: DeployPlan, server: string): string[] {
+  const isWebCopy = plan.app.servers?.includes(server) ?? false;
+  const workers = processServices(plan, server);
+  const services = [...(isWebCopy ? ["app", APP_KAMAL_PROXY_SERVICE] : []), ...workers];
+  return [
+    ...SCRIPT_ROOTS,
+    "set -eu",
+    `export DOCKER_CONFIG=${appFolder(plan)}/.docker`,
+    `trap '${LOGOUT}' EXIT`,
+    `cd ${appFolder(plan)}`,
+    'target="${1:-}"',
+    ...IMAGE_REF,
+    'if [ -z "$target" ] || ! image_ref "$target"; then',
+    `  echo ${shellQuote(`::error::The pre-pull step of the copy server ${server} was given no image digest it can use, so nothing changed there. Run the workflow again.`)}`,
+    "  exit 1",
+    "fi",
+    'export APP_IMAGE="$target"',
+    `docker compose pull ${services.join(" ")}`,
+  ];
+}
+
+/**
+ * The serial rolling switch script on the copy server `server` (033, POSIX sh, `$1` = `$IMAGE`):
+ * saves `.env` to `.env.previous`, switches the web copy through its WireGuard-bound `app-proxy`
+ * and verifies HTTP health on `<wg_ip>:18090` (for web copies), starts and checks any workers
+ * placed on `server`, and writes `finished` to `.start.outcome`. Never runs `release` or `cron`.
+ */
+export function copyServerSwitchCommands(plan: DeployPlan, server: string): string[] {
+  const isWebCopy = plan.app.servers?.includes(server) ?? false;
+  const workers = processServices(plan, server);
+  const hosts = proxyHosts(plan, undefined);
+  const [primaryHost] = siteHosts(plan);
+  const wgIp = privateAddress(plan, server);
+  const copyUrl = `http://${wgIp}:${APP_COPY_PROXY_PORT}${healthPath(plan)}`;
+  const hostArg = primaryHost === undefined ? "" : ` -H ${shellQuote(`Host: ${primaryHost}`)}`;
+  const copyHealthCheck = isWebCopy
+    ? [
+        "copy_ok=0",
+        "for attempt in 1 2 3 4 5; do",
+        `  if curl -fsS --max-time 10${hostArg} ${shellQuote(copyUrl)} > /dev/null; then copy_ok=1; break; fi`,
+        "  sleep 2",
+        "done",
+        'if [ "$copy_ok" -ne 1 ]; then',
+        '  for id in $(docker compose ps -aq app); do keep_failed app "$id" health; done',
+        `  echo ${shellQuote(`::error::The copy on the server ${server} switched its container, but did not answer health checks on ${copyUrl}, so OpsCrew will roll back.`)}`,
+        "  exit 1",
+        "fi",
+      ]
+    : [];
+  return [
+    ...SCRIPT_ROOTS,
+    "set -eu",
+    `cd ${appFolder(plan)}`,
+    ...startLock(plan),
+    ...heldRefusal(plan, {}),
+    'target="${1:-}"',
+    ...IMAGE_REF,
+    'if [ -z "$target" ] || ! image_ref "$target"; then',
+    `  echo ${shellQuote(`::error::The deploy step of the copy server ${server} was given no image digest it can use, so nothing changed there. Run the workflow again.`)}`,
+    "  exit 1",
+    "fi",
+    "rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous; fi",
+    `echo started > ${START_OUTCOME}`,
+    'export APP_IMAGE="$target"',
+    'RUN_IMAGE="$target"',
+    ...keepFailed(plan),
+    ...recordProcesses(workers),
+    ...(isWebCopy
+      ? switchCopyApp(plan, server, hosts, [
+          'keep_failed app "$new" health',
+          `echo ${shellQuote(`::error::The new version on the copy server ${server} did not pass its health check (GET ${healthPath(plan)} on port ${plan.app.port}) within ${DEPLOY_TIMEOUT_SECONDS} seconds, so OpsCrew removed it and will roll back.`)}`,
+        ])
+      : [WRITE_ENV]),
+    ...copyHealthCheck,
+    ...startProcesses(workers, [
+      `printf ${shellMessage(processFailed(plan))} "$service" "$service"`,
+      'keep_failed "$service" "$id" "process $service"',
+    ]),
+    `echo finished > ${START_OUTCOME}`,
+  ];
+}
+
+/**
+ * The rollback script on the copy server `server` (033, POSIX sh, `$1` = failed `$IMAGE`):
+ * prints `unchanged` if this copy never switched to `$1`, `no-previous` if `.env.previous` is
+ * absent or identical, or switches the copy's web container and workers back to `.env.previous`
+ * and prints `restored`.
+ */
+export function copyServerRollbackCommands(plan: DeployPlan, server: string): string[] {
+  const isWebCopy = plan.app.servers?.includes(server) ?? false;
+  const workers = processServices(plan, server);
+  const hosts = proxyHosts(plan, undefined);
+  const keepLines = isWebCopy
+    ? [
+        `outcome="$(cat ${START_OUTCOME} 2> /dev/null || true)"`,
+        'if [ "$outcome" != kept ]; then',
+        '  why=start; if [ "$outcome" = finished ]; then why=check; fi',
+        '  for id in $(docker compose ps -aq app); do keep_failed app "$id" "$why"; done',
+        "fi",
+      ]
+    : [];
+  const back = [
+    ...(isWebCopy
+      ? switchCopyApp(plan, server, hosts, [
+          `echo ${shellQuote(`::error::The previous version on the copy server ${server} did not pass its health check either.`)}`,
+        ])
+      : [WRITE_ENV]),
+    ...restoreProcesses(workers),
+  ];
+  return [
+    ...SCRIPT_ROOTS,
+    "set -eu",
+    `cd ${appFolder(plan)}`,
+    ...startLock(
+      plan,
+      `::error::The start script of this run is still running on the copy server ${server} after ${START_LOCK_WAIT_SECONDS / 60} minutes, so the rollback step changed nothing there.`,
+    ),
+    ...heldRefusal(plan, {}, "held"),
+    'RUN_IMAGE="$1"',
+    ...keepFailed(plan),
+    'if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi',
+    "if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi",
+    ...keepLines,
+    "APP_IMAGE=\"$(sed -n 's/^APP_IMAGE=//p' .env.previous)\"",
+    "export APP_IMAGE",
+    "{",
+    ...back.map((line) => `  ${line}`),
+    "} >&2",
+    `rm -f .env.previous ${PREVIOUS_PROCESSES}`,
+    "echo restored",
   ];
 }

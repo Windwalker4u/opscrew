@@ -1,5 +1,12 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
-import { APP_SERVER, type DeployPlan, poolerName, postgresPooler } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  appCopyServers,
+  type DeployPlan,
+  hasRemoteAppCopies,
+  poolerName,
+  postgresPooler,
+} from "@opscrew/plan-schema";
 import { POSTGRES_OWNER_SECRET, POSTGRES_RUNTIME_SECRET } from "../catalog";
 import type { RotationCommand, RotationMode, RotationStep } from "../catalog/types";
 import { shellQuote } from "../runtime/services";
@@ -21,6 +28,7 @@ import {
   serverWords,
   startProcesses,
   switchApp,
+  switchCopyApp,
 } from "./switch";
 
 /**
@@ -37,10 +45,12 @@ export const ROTATE_DIR = ".rotate";
 export const ROTATE_APPROVAL_FILE = `${ROTATE_DIR}/approval`;
 
 /**
- * What a run of `rotate.sh` does: on the app's server `rotate` (the whole rotation) or `undo`; on
- * an extra server `begin` (up to its env files), `finish` (from its `finish` on) or `undo`.
+ * What a run of `rotate.sh` does: on the app's server `rotate` (the whole rotation, when there are
+ * no remote copy servers), `begin` / `finish` (when remote copy servers switch between steps 5 and
+ * 6), or `undo`; on an extra server `begin` (up to its env files, or through step 5 on a pure copy
+ * server), `switch` (step 5 on a hybrid copy server), `finish` (step 6) or `undo`.
  */
-export type RotateAction = "rotate" | "begin" | "finish" | "undo";
+export type RotateAction = "rotate" | "begin" | "switch" | "finish" | "undo";
 
 /**
  * The line of {@link ROTATE_APPROVAL_FILE}, without its newline: the plan's hash (64 hex digits),
@@ -109,17 +119,27 @@ export interface RotateStep {
  * `app.env` does, wherever the database runs; then each step's once.
  */
 export function rotateEnvFiles(
-  plan: Pick<DeployPlan, "services">,
+  plan: Pick<DeployPlan, "services"> & Partial<Pick<DeployPlan, "app" | "processes">>,
   steps: readonly RotateStep[],
   server: string = APP_SERVER,
 ): string[] {
   const app = server === APP_SERVER;
+  const isCopy =
+    !app &&
+    plan.app !== undefined &&
+    appCopyServers({ app: plan.app, processes: plan.processes }).includes(server);
+  const hasAppEnv = app || isCopy;
+  const hasWorkers =
+    app ||
+    (isCopy &&
+      plan.processes !== undefined &&
+      processServices(plan as DeployPlan, server).length > 0);
   const release = app && steps.some((step) => step.secrets?.includes(POSTGRES_OWNER_SECRET));
   return [
     ...new Set([
-      ...(app ? [APP_ENV] : []),
+      ...(hasAppEnv ? [APP_ENV] : []),
       ...(release ? [RELEASE_DB_ENV.file] : []),
-      ...(app && hasWorkerDbEnv(plan) ? [WORKER_DB_ENV.file] : []),
+      ...(hasWorkers && hasWorkerDbEnv(plan) ? [WORKER_DB_ENV.file] : []),
       ...steps.map((s) => s.envFile),
     ]),
   ];
@@ -132,7 +152,7 @@ export function rotateEnvFiles(
  * uses none).
  */
 export function rotateInput(
-  plan: Pick<DeployPlan, "services">,
+  plan: Pick<DeployPlan, "services"> & Partial<Pick<DeployPlan, "app" | "processes">>,
   steps: readonly RotateStep[],
   input: {
     envFiles: Readonly<Record<string, string>>;
@@ -215,23 +235,38 @@ function maskRewrite(plan: DeployPlan, server: string): string[] {
  * cron created again from the new `app.env`, each of which must keep running
  * ({@link startProcesses}). The services never move.
  */
-function appSwitch(plan: DeployPlan, values: "new" | "old"): string[] {
+function appSwitch(plan: DeployPlan, values: "new" | "old", server: string = APP_SERVER): string[] {
   const kept =
     plan.deploy.strategy === "rolling"
       ? "so OpsCrew removed it, and the copy that ran keeps serving"
       : "so OpsCrew removed it, and the app is not serving now";
+  const isWeb = server === APP_SERVER || (plan.app.servers?.includes(server) ?? false);
+  const webSwitch =
+    server === APP_SERVER
+      ? switchApp(
+          plan,
+          proxyHosts(plan, undefined),
+          [
+            `echo ${shellQuote(`The app's new copy did not pass its health check with the ${values} values (kamal-proxy's reason is above), ${kept}.`)} >&2`,
+          ],
+          ["rot_exit"],
+        )
+      : isWeb
+        ? switchCopyApp(
+            plan,
+            server,
+            proxyHosts(plan, undefined),
+            [
+              `echo ${shellQuote(`The app's new copy on ${serverWords(server)} did not pass its health check with the ${values} values (kamal-proxy's reason is above), ${kept}.`)} >&2`,
+            ],
+            ["rot_exit"],
+          )
+        : [];
   return [
     "APP_IMAGE=\"$(sed -n 's/^APP_IMAGE=//p' .env)\"",
     "export APP_IMAGE",
-    ...switchApp(
-      plan,
-      proxyHosts(plan, undefined),
-      [
-        `echo ${shellQuote(`The app's new copy did not pass its health check with the ${values} values (kamal-proxy's reason is above), ${kept}.`)} >&2`,
-      ],
-      ["rot_exit"],
-    ),
-    ...startProcesses(processServices(plan), [
+    ...webSwitch,
+    ...startProcesses(processServices(plan, server), [
       `${said(`The %s container did not keep running after it started with the ${values} values.`)} "$service" >&2`,
     ]),
   ];
@@ -309,6 +344,10 @@ export function renderRotateScript(
   server: string = APP_SERVER,
 ): string[] {
   const app = server === APP_SERVER;
+  const isCopy = !app && appCopyServers(plan).includes(server);
+  const hasApp = app || isCopy;
+  const splitPhases = !app || hasRemoteAppCopies(plan);
+  const hybrid = isCopy && steps.length > 0;
   const folder = appFolder(plan);
   const files = rotateEnvFiles(plan, steps, server);
   const number = new Map(files.map((file, i) => [file, i + 1]));
@@ -387,16 +426,18 @@ export function renderRotateScript(
       ...(pooled.length === 0 ? [] : [recreate(pooled, true)]),
     ],
   });
-  /** The last unit of `begin` on an extra server. */
+  /** The last unit of `begin` on a service-bearing extra server. */
   const envUnit = units.length;
-  if (app) {
+  if (hasApp) {
     units.push({
       step: 5,
       what: "switching the app to the new values",
-      lines: appSwitch(plan, "new"),
+      lines: appSwitch(plan, "new", server),
     });
   }
   const switchUnit = units.length;
+  const beginLast = !hasApp || hybrid ? envUnit : switchUnit;
+  const finishNeed = !hasApp ? envUnit : switchUnit;
   /**
    * Step 6's first unit, before any `finish`: once it is done, an old value may be gone, so undo is
    * refused and a failure offers only to go on.
@@ -509,12 +550,12 @@ export function renderRotateScript(
             lines: [recreate(pooled, true)],
           },
         ]),
-    ...(app
+    ...(hasApp
       ? [
           {
             what: "switching the app back to the old values",
             when: `[ "$rot_done" -ge ${switchUnit - 1} ]`,
-            lines: appSwitch(plan, "old"),
+            lines: appSwitch(plan, "old", server),
           },
         ]
       : []),
@@ -534,16 +575,28 @@ export function renderRotateScript(
     `${pad}${said(text)} "$rot_cmd" >&2`,
     `${pad}exit 1`,
   ];
-  const runs = app
+  const runs = !splitPhases
     ? [
         ["<hash>", "rotates, or goes on after the last step it finished"],
         ["--undo <hash>", "puts the old values back, before step 6"],
       ]
-    : [
-        ["begin <hash>", "steps 1 to 4: the services' new values, before the app's switch"],
-        ["finish <hash>", "step 6: the old values dropped, once the app switched"],
-        ["--undo <hash>", "puts the old values back, before step 6"],
-      ];
+    : hybrid
+      ? [
+          ["begin <hash>", "steps 1 to 4: the services' new values, before the app's switch"],
+          ["switch <hash>", "step 5: switches this server's app copies to the new values"],
+          ["finish <hash>", "step 6: the old values dropped, once all copies switched"],
+          ["--undo <hash>", "puts the old values back, before step 6"],
+        ]
+      : [
+          [
+            "begin <hash>",
+            hasApp
+              ? "steps 1 to 5: the new values and this server's app switch, before step 6"
+              : "steps 1 to 4: the services' new values, before the app's switch",
+          ],
+          ["finish <hash>", "step 6: the old values dropped, once the app switched"],
+          ["--undo <hash>", "puts the old values back, before step 6"],
+        ];
   const usage = `Usage: sh rotate.sh ${runs.map(([run]) => run).join(" | ")}`;
   /** The test that the hold is this rotation's ({@link RESTORE_HELD} reads `rotation <hash>`). */
   const ours = `[ "$(cat ${RESTORE_HELD} 2> /dev/null || true)" = "${ROTATION_HOLDER} $rot_hash" ]`;
@@ -560,7 +613,7 @@ export function renderRotateScript(
     `rm -f ${STATE} ${files.map(previous).join(" ")}`,
     unhold,
     'rot_what=""',
-    `echo ${shellQuote(`OpsCrew rotated the credentials on ${where}: ${app ? "the app runs on the new values, " : ""}the old values no longer work, and deploys are no longer held.`)}`,
+    `echo ${shellQuote(`OpsCrew rotated the credentials on ${where}: ${hasApp ? "the app runs on the new values, " : ""}the old values no longer work, and deploys are no longer held.`)}`,
   ];
   return [
     `# OpsCrew's credential rotation of ${plan.app.name} on ${where}, rendered for one rotation; opscrew rotate runs it.`,
@@ -608,7 +661,11 @@ export function renderRotateScript(
     "}",
     'case "${1:-}" in',
     "  --undo) rot_action=undo; shift ;;",
-    ...(app ? ["  *) rot_action=rotate ;;"] : ['  begin | finish) rot_action="$1"; shift ;;']),
+    ...(!splitPhases
+      ? ["  *) rot_action=rotate ;;"]
+      : hybrid
+        ? ['  begin | switch | finish) rot_action="$1"; shift ;;']
+        : ['  begin | finish) rot_action="$1"; shift ;;']),
     "esac",
     'rot_hash="${1:-}"',
     'if [ -z "$rot_action" ] || [ "$#" -ne 1 ]; then rot_hash=""; fi',
@@ -676,14 +733,25 @@ export function renderRotateScript(
       "    ",
     ),
     "  fi",
-    ...(app
+    ...(!splitPhases
       ? []
       : [
-          `  if [ "$rot_action" = begin ] && [ "$rot_done" -ge ${envUnit} ]; then`,
+          `  if [ "$rot_action" = begin ] && [ "$rot_done" -ge ${beginLast} ]; then`,
           `    echo ${shellQuote(`This rotation's services have their new values on ${where} already, so nothing was changed.`)} >&2`,
           "    exit 0",
           "  fi",
-          `  if [ "$rot_action" = finish ] && [ "$rot_done" -lt ${envUnit} ]; then`,
+          ...(hybrid
+            ? [
+                `  if [ "$rot_action" = switch ] && [ "$rot_done" -lt ${envUnit} ]; then`,
+                ...refuse(notBegun, "    "),
+                "  fi",
+                `  if [ "$rot_action" = switch ] && [ "$rot_done" -ge ${switchUnit} ]; then`,
+                `    echo ${shellQuote(`This rotation's app copies on ${where} already run on the new values, so nothing was changed.`)} >&2`,
+                "    exit 0",
+                "  fi",
+              ]
+            : []),
+          `  if [ "$rot_action" = finish ] && [ "$rot_done" -lt ${finishNeed} ]; then`,
           ...refuse(notBegun, "    "),
           "  fi",
         ]),
@@ -704,7 +772,12 @@ export function renderRotateScript(
     'elif [ "$rot_action" = undo ]; then',
     `  echo ${shellQuote(`No rotation of this plan is unfinished on ${where}, so there is nothing to undo.`)} >&2`,
     "  exit 0",
-    ...(app ? [] : ['elif [ "$rot_action" = finish ]; then', ...refuse(notBegun)]),
+    ...(!splitPhases
+      ? []
+      : [
+          `elif [ "$rot_action" = finish ]${hybrid ? ' || [ "$rot_action" = switch ]' : ""}; then`,
+          ...refuse(notBegun),
+        ]),
     `elif [ -f ${RESTORE_HELD} ]; then`,
     `  ${heldElsewhere}`,
     "fi",
@@ -722,7 +795,7 @@ export function renderRotateScript(
     `    ${heldElsewhere}`,
     "  fi",
     "fi",
-    ...(app
+    ...(hasApp
       ? [
           "if [ -z \"$(sed -n 's/^APP_IMAGE=//p' .env 2> /dev/null || true)\" ]; then",
           ...refuseRun(
@@ -754,9 +827,14 @@ export function renderRotateScript(
     "fi",
     'if [ "$rot_action" != undo ]; then',
     `  if [ "$rot_done" -gt 0 ]; then echo ${shellQuote("OpsCrew goes on with the rotation after the last step it finished.")} >&2; fi`,
-    // The last unit this run does: on an extra server `begin` stops after the env files.
+    // The last unit this run does: `begin` stops before step 6 (or step 5 on hybrid/backing servers).
     `  rot_last=${units.length}`,
-    ...(app ? [] : [`  if [ "$rot_action" = begin ]; then rot_last=${envUnit}; fi`]),
+    ...(!splitPhases
+      ? []
+      : [
+          `  if [ "$rot_action" = begin ]; then rot_last=${beginLast}; fi`,
+          ...(hybrid ? [`  if [ "$rot_action" = switch ]; then rot_last=${switchUnit}; fi`] : []),
+        ]),
     ...units.flatMap((unit, i) =>
       indent("  ", [
         `if [ "$rot_done" -lt ${i + 1} ] && [ "$rot_last" -ge ${i + 1} ]; then`,
@@ -766,7 +844,7 @@ export function renderRotateScript(
         "fi",
       ]),
     ),
-    ...(app
+    ...(!splitPhases
       ? indent("  ", release)
       : [
           '  if [ "$rot_action" = finish ]; then',
@@ -792,7 +870,7 @@ export function renderRotateScript(
     `  ${unhold}`,
     `  rm -f ${files.map(previous).join(" ")} ${STATE}`,
     '  rot_what=""',
-    `  echo ${shellQuote(`OpsCrew put the old values back on ${where}: ${app ? "the app runs on them again, and " : ""}deploys are no longer held.`)}`,
+    `  echo ${shellQuote(`OpsCrew put the old values back on ${where}: ${hasApp ? "the app runs on them again, and " : ""}deploys are no longer held.`)}`,
     "fi",
   ];
 }
