@@ -1526,22 +1526,29 @@ async function provisionFlow(
   let edgeOriginTokenValue: string | undefined;
   if (usesSharedOriginHeader(plan) && !tunnelMode(plan) && thirdPartyEdge !== undefined) {
     const token = await ensureEdgeOriginToken(deps);
-    edgeOriginTokenValue = formatEdgeOriginTokenSecret(token);
     const edgeDef = edgeProvider(thirdPartyEdge.id);
     const idOutputName = edgeDef.terraform.root?.resourceIdOutput;
-    const rawResourceId = idOutputName === undefined ? undefined : applied.outputs[idOutputName];
+    const outputs = await currentOutputs(applied, engine, dir, engineEnv);
+    const rawResourceId = idOutputName === undefined ? undefined : outputs[idOutputName];
     const resourceId =
       rawResourceId === undefined || rawResourceId === null ? undefined : String(rawResourceId);
-    if (resourceId !== undefined && resourceId !== "") {
-      await syncEdgeOriginHeader(deps, plan, {
-        resourceId,
-        token: token.current,
-        apiKey: thirdPartyEdge.apiKey,
-        command,
-        planOnly: options.planOnly === true,
-        ...(services.edgeFetch === undefined ? {} : { fetch: services.edgeFetch }),
-      });
+    if (resourceId === undefined || resourceId === "") {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `OpsCrew could not read ${edgeDef.displayName}'s resource id (${idOutputName ?? "unknown output"}) from Terraform state, so it did not configure the origin-verification header or deploy secret.`,
+        {
+          hint: "Check that the edge resource exists in Terraform state, then run `opscrew provision` again.",
+        },
+      );
     }
+    await syncEdgeOriginHeader(deps, plan, {
+      resourceId,
+      token: token.current,
+      apiKey: thirdPartyEdge.apiKey,
+      command,
+      ...(services.edgeFetch === undefined ? {} : { fetch: services.edgeFetch }),
+    });
+    edgeOriginTokenValue = formatEdgeOriginTokenSecret(token);
   }
 
   let secretsTarget: {

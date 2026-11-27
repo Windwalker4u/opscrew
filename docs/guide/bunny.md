@@ -11,7 +11,7 @@ with `dns.edge: bunny`).
 
 ## Prerequisites
 
-1. A Bunny.net account (pay-as-you-go with a \$1/month account minimum; Bunny DNS is included).
+1. A Bunny.net account (pay-as-you-go with a $1/month account minimum; Bunny DNS is included).
 2. Your account API key from [dash.bunny.net/account/api-key](https://dash.bunny.net/account/api-key),
    exported as `BUNNYNET_API_KEY`.
 3. If `dns.provider: bunny`, add your domain's zone in Bunny DNS before running `opscrew provision`.
@@ -69,8 +69,11 @@ frequently — too many for cloud provider firewalls. Instead:
   SecOps blocks any Terraform plan that tries to put `SetRequestHeader` in state.
 - **Reverse-proxy ordering:** On Caddy, nginx, and OpenLiteSpeed, every request missing the exact
   `X-OpsCrew-Origin-Token` value receives **HTTP 403** before reaching `kamal-proxy` and before
-  trusting `X-Real-IP`. After verification, the proxy strips `X-OpsCrew-Origin-Token` so your app
-  never sees it and forwards Bunny's `X-Real-IP` as `X-Forwarded-For`.
+  trusting `X-Real-IP`. After verification, every proxy strips `X-OpsCrew-Origin-Token` so your app
+  never sees it. Caddy and nginx also forward Bunny's `X-Real-IP` as `X-Forwarded-For`; on
+  OpenLiteSpeed, OpsCrew strips untrusted `X-Forwarded-*` headers without copying `X-Real-IP` into
+  `X-Forwarded-For` (your app can read `X-Real-IP` directly once OpenLiteSpeed has verified the
+  origin token).
 
 ## Zero-downtime rotation
 

@@ -1,8 +1,10 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { FetchLike, RemoteExec } from "@opscrew/contracts";
+import type { ApprovalRequest, FetchLike, RemoteExec } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
+import { OPENLITESPEED_COMMAND } from "@opscrew/iac-templates";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PhaseDeps } from "../context";
@@ -13,10 +15,15 @@ import {
   syncEdgeOriginHeader,
   writeEdgeOriginToken,
 } from "../provision/edge-origin-token";
-import { recordServerAddress } from "../shared";
+import { ensureStatePassphrase, recordServerAddress } from "../shared";
 import { ensureDeployKey } from "../shared/ssh-keys";
-import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
-import { rotateEdgeOriginToken } from "./edge-origin-token";
+import {
+  createTestPhaseDeps,
+  FakeEngine,
+  ScriptedApprovalHandler,
+  writeFakeState,
+} from "../testing";
+import { nextEdgeOriginTokenFile, rotateEdgeOriginToken } from "./edge-origin-token";
 
 const tempDirs: string[] = [];
 const API_KEY = fakeSecret("generic-password", "bunny-rotate-key");
@@ -40,7 +47,10 @@ async function makeDeps(approve: boolean, env: Record<string, string> = {}): Pro
   return deps;
 }
 
-function bunnyPlan(dnsProvider: "bunny" | "cloudflare" = "bunny") {
+function bunnyPlan(
+  dnsProvider: "bunny" | "cloudflare" = "bunny",
+  edge: "caddy" | "nginx" | "openlitespeed" = "caddy",
+) {
   return DeployPlanSchema.parse({
     schemaVersion: 1,
     createdAt: "2026-11-26T00:00:00.000Z",
@@ -52,7 +62,7 @@ function bunnyPlan(dnsProvider: "bunny" | "cloudflare" = "bunny") {
       location: "fsn1",
       serverType: "cx23",
       backups: true,
-      edge: "caddy",
+      edge,
     },
     dns: {
       provider: dnsProvider,
@@ -263,5 +273,142 @@ describe("third-party edge setup and zero-downtime edge-origin-token rotation (0
         resourceId: "55",
       }),
     ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+  });
+
+  it("stages pending next token so non-interactive refuse -> --approve <hash> rerun succeeds with the same hash", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opscrew-edge-rotate-approve-"));
+    tempDirs.push(root);
+    let approvedHash: string | undefined;
+    const seenHashes: string[] = [];
+    const handler = new ScriptedApprovalHandler((req: ApprovalRequest) => {
+      if (req.planHash !== undefined) seenHashes.push(req.planHash);
+      return approvedHash !== undefined && req.planHash === approvedHash;
+    });
+    const deps = await createTestPhaseDeps({
+      root,
+      approvalHandler: handler,
+      env: { BUNNYNET_API_KEY: API_KEY },
+    });
+    await recordServerAddress(deps.paths, { ipv4: "203.0.113.10" });
+    await ensureDeployKey(deps.paths, deps.redactor);
+
+    const plan = bunnyPlan("bunny");
+    const initial = await ensureEdgeOriginToken(deps, () => Buffer.alloc(32, 0x11));
+    const bunny = fakeBunnyApi({ initialToken: initial.current });
+    const snippets: string[] = [];
+
+    // First run (non-interactive): refuses approval, leaves generated_values.json untouched,
+    // and stages the pending next token in .edge-origin-token.next.
+    await expect(
+      rotateEdgeOriginToken(deps, plan, {
+        resourceId: "55",
+        fetch: bunny.fetch,
+        remote: fakeRemote(bunny.events, snippets),
+        randomBytes: () => Buffer.alloc(32, 0x22),
+      }),
+    ).rejects.toMatchObject({ code: "APPROVAL_REFUSED" });
+
+    expect(seenHashes).toHaveLength(1);
+    expect(await readEdgeOriginToken(deps)).toEqual({ current: initial.current });
+    expect(existsSync(nextEdgeOriginTokenFile(deps))).toBe(true);
+
+    // Second run with --approve <hash> and DIFFERENT randomBytes (0x33): MUST reuse staged 0x22,
+    // produce the exact same hash, succeed, and delete .edge-origin-token.next on finish.
+    approvedHash = seenHashes[0];
+    const result = await rotateEdgeOriginToken(deps, plan, {
+      resourceId: "55",
+      fetch: bunny.fetch,
+      remote: fakeRemote(bunny.events, snippets),
+      randomBytes: () => Buffer.alloc(32, 0x33),
+    });
+
+    const expectedNext = "22".repeat(32);
+    expect(result.rotated).toBe(true);
+    expect(result.edgePlanHash).toBe(approvedHash);
+    expect(bunny.getCurrentToken()).toBe(expectedNext);
+    expect(await readEdgeOriginToken(deps)).toEqual({ current: expectedNext });
+    expect(existsSync(nextEdgeOriginTokenFile(deps))).toBe(false);
+  });
+
+  it.each([
+    [
+      "caddy",
+      "/srv/edge/tls/shop/origin-token.caddy",
+      "docker compose -p opscrew-edge -f /srv/edge/compose.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null",
+    ],
+    [
+      "nginx",
+      "/srv/edge/tls/shop/origin-token.conf",
+      "docker compose -p opscrew-edge -f /srv/edge/compose.yaml exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null",
+    ],
+    [
+      "openlitespeed",
+      "/srv/edge/tls/shop/origin-token.conf",
+      `docker compose -p opscrew-edge -f /srv/edge/compose.yaml exec -T openlitespeed ${OPENLITESPEED_COMMAND.reload} < /dev/null`,
+    ],
+  ] as const)(
+    "takes /srv/edge/.lock (flock 9) and runs the exact reload command for %s",
+    async (proxy, expectedPath, expectedReload) => {
+      const deps = await makeDeps(true);
+      const plan = bunnyPlan("bunny", proxy);
+      const initial = await ensureEdgeOriginToken(deps, () => Buffer.alloc(32, 0x11));
+      const bunny = fakeBunnyApi({ initialToken: initial.current });
+      const commands: string[] = [];
+
+      const result = await rotateEdgeOriginToken(deps, plan, {
+        resourceId: "55",
+        fetch: bunny.fetch,
+        remote: (host) => ({
+          host,
+          async run(command) {
+            commands.push(command);
+            return { exitCode: 0, stdout: "", stderr: "" };
+          },
+        }),
+        randomBytes: () => Buffer.alloc(32, 0x22),
+      });
+
+      expect(result.proxy).toBe(proxy);
+      expect(result.serverPath).toBe(expectedPath);
+      expect(commands).toHaveLength(2);
+      for (const command of commands) {
+        expect(command).toContain("flock 9");
+        expect(command).toContain("9> '/srv/edge/.lock'");
+        expect(command).toContain(expectedPath);
+        expect(command).toContain(expectedReload);
+        expect(command).not.toContain("[object Object]");
+      }
+    },
+  );
+
+  it("reads bunny_pullzone_id via infrastructureOutputs through projectEngine (preserving PATH and TF_ENCRYPTION)", async () => {
+    const deps = await makeDeps(true, { PATH: process.env.PATH ?? "/usr/bin" });
+    const plan = bunnyPlan("bunny");
+    await writeFakeState(deps.paths);
+    await ensureStatePassphrase(deps.paths);
+    let outputEnv: Record<string, string | undefined> | undefined;
+    const engine = new FakeEngine({ outputs: { bunny_pullzone_id: "55" } });
+    engine.output = async (_dir?: string, opts?: { env?: Record<string, string | undefined> }) => {
+      engine.calls.push("output");
+      outputEnv = opts?.env;
+      return engine.outputs;
+    };
+    const initial = await ensureEdgeOriginToken(deps, () => Buffer.alloc(32, 0x11));
+    const bunny = fakeBunnyApi({ initialToken: initial.current });
+    const snippets: string[] = [];
+
+    const result = await rotateEdgeOriginToken(deps, plan, {
+      fetch: bunny.fetch,
+      remote: fakeRemote(bunny.events, snippets),
+      services: { engine: async () => engine },
+      randomBytes: () => Buffer.alloc(32, 0x22),
+    });
+
+    expect(result.rotated).toBe(true);
+    expect(engine.calls).toContain("output");
+    // projectEngine populates PATH and TF_ENCRYPTION (not bypassed by a minimal engineEnv).
+    expect(outputEnv?.PATH).toBeTruthy();
+    expect(outputEnv?.TF_ENCRYPTION).toContain("pbkdf2");
+    expect(bunny.getCurrentToken()).toBe("22".repeat(32));
   });
 });

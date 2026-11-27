@@ -2568,6 +2568,18 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
       message: `is required when dns.edge is "${plan.dns.edge}"`,
     });
   }
+  const thirdPartyEdgeOrDns =
+    plan.dns.edge ??
+    (plan.dns.provider !== "none" && plan.dns.provider !== "cloudflare"
+      ? plan.dns.provider
+      : undefined);
+  if (thirdPartyEdgeOrDns !== undefined && !isCloudProvider(plan.target.provider)) {
+    ctx.addIssue({
+      code: "custom",
+      path: plan.dns.edge !== undefined ? ["dns", "edge"] : ["dns", "provider"],
+      message: `"${thirdPartyEdgeOrDns}" is currently supported only on cloud VPS targets, not "${plan.target.provider}"`,
+    });
+  }
   if (
     plan.target.provider === "own" &&
     plan.target.access === "tunnel" &&

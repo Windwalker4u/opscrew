@@ -4,6 +4,7 @@ import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { renderEdgeSite } from "../runtime";
 import { renderWorkflow } from "../workflow";
+import { renderEdgeCompose } from "./index";
 import {
   originTokenContainerPath,
   originTokenServerPath,
@@ -188,5 +189,21 @@ describe("shared-header origin protection across Caddy, nginx, and OpenLiteSpeed
     );
     expect(workflow.content).toContain("/srv/edge/tls/shop/origin-token.caddy.new");
     expect(workflow.content).toContain("origin-token.caddy.previous");
+    expect(workflow.content).not.toContain('rm -rf "$EDGE_DIR"/tls/shop');
+  });
+
+  it("renderEdgeCompose never mixes Cloudflare CIDRs with Bunny's X-Real-IP on Caddy or OpenLiteSpeed", () => {
+    const cfRanges = ["173.245.48.0/20", "2400:cb00::/32"];
+    const caddyCompose = renderEdgeCompose(bunnyPlan("caddy"), cfRanges).content;
+    expect(caddyCompose).not.toContain("173.245.48.0/20");
+    expect(caddyCompose).not.toContain("trusted_proxies");
+    expect(caddyCompose).not.toContain("client_ip_headers");
+    expect(caddyCompose).not.toContain("X-Real-IP");
+    expect(caddyCompose).not.toContain("Bunny.net");
+
+    const olsCompose = renderEdgeCompose(bunnyPlan("openlitespeed"), cfRanges).content;
+    expect(olsCompose).not.toContain("173.245.48.0/20");
+    expect(olsCompose).not.toContain("useIpInProxyHeader");
+    expect(olsCompose).not.toContain("Bunny.net");
   });
 });

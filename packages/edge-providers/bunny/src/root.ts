@@ -117,7 +117,7 @@ export function renderBunnyRoot(input: EdgeRootInput): EdgeRootContribution {
     ["pullzone_name", "var.bunny_pullzone_name"],
     ["domain", "var.domain"],
     ["www", "var.www"],
-    ["origin_host", input.ipv4Expr],
+    ["origin_host", `coalesce(${input.ipv4Expr}, ${input.ipv6Expr})`],
     ["proxied", "var.bunny_proxied"],
     ["waf_custom_rules", "var.bunny_waf_custom_rules"],
     ["manage_dns", input.manageDns ? "true" : "false"],

@@ -111,4 +111,48 @@ describe("plan-schema DNS host and Bunny.net edge provider rules (036 PR 2)", ()
     expect(noDomain.success).toBe(false);
     expect(noDomain.error?.issues.map((i) => i.path.join("."))).toContain("dns.domain");
   });
+
+  it("refuses Bunny on non-cloud targets (own, portainer, localhost) until their roots wire thirdPartyEdgeRoot", () => {
+    const ownTarget = {
+      ...basePlan({ provider: "bunny", domain: "shop.example.com", proxied: true }),
+      target: { provider: "own", mode: "vps-compose", arch: "amd64", access: "public" },
+    };
+    const ownResult = DeployPlanSchema.safeParse(ownTarget);
+    expect(ownResult.success).toBe(false);
+    expect(ownResult.error?.issues.map((i) => i.message).join(" ")).toContain("cloud VPS targets");
+
+    const portainerTarget = {
+      ...basePlan({ provider: "none", edge: "bunny", domain: "shop.example.com", proxied: true }),
+      target: {
+        provider: "portainer",
+        mode: "portainer-stack",
+        arch: "amd64",
+        environmentId: 1,
+        redeploy: "updater",
+        web: { mode: "caddy" },
+      },
+    };
+    const portainerResult = DeployPlanSchema.safeParse(portainerTarget);
+    expect(portainerResult.success).toBe(false);
+    expect(portainerResult.error?.issues.map((i) => i.path.join("."))).toContain("dns.edge");
+    expect(portainerResult.error?.issues.map((i) => i.message).join(" ")).toContain(
+      "cloud VPS targets",
+    );
+
+    const localhostTarget = {
+      ...basePlan({ provider: "bunny", domain: "shop.example.com", proxied: true }),
+      target: {
+        provider: "localhost",
+        mode: "local-compose",
+        arch: "amd64",
+        ports: { http: 80, https: 443 },
+        image: "local-build",
+      },
+    };
+    const localhostResult = DeployPlanSchema.safeParse(localhostTarget);
+    expect(localhostResult.success).toBe(false);
+    expect(localhostResult.error?.issues.map((i) => i.message).join(" ")).toContain(
+      "cloud VPS targets",
+    );
+  });
 });

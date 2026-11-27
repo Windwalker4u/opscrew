@@ -20,12 +20,15 @@
  *       `previous`), record the rotation date, and refresh the encrypted recovery copy.
  */
 import { randomBytes as nodeRandomBytes } from "node:crypto";
+import { mkdir, rm } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { FetchLike } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { OpsCrewError, readTextIfExists, writeFileAtomic } from "@opscrew/core";
 import { edgeProvider } from "@opscrew/edge-providers";
 import {
   DEPLOY_SECRETS,
   EDGE_DIR,
+  EDGE_PROJECT,
   type EdgeProxy,
   edgeProxy,
   OPENLITESPEED_COMMAND,
@@ -48,6 +51,7 @@ import {
 import { deploySecretPlace, setSecretAt } from "../provision/secrets";
 import type { ProvisionServices } from "../provision/types";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
+import { generatedValuesFile } from "../shared/app-secrets";
 import { requestApproval } from "../shared/approvals";
 import { infrastructureOutputs } from "../shared/engine";
 import { serverShell } from "../status/servers";
@@ -77,10 +81,17 @@ export interface EdgeOriginTokenRotationResult {
   copy?: RefreshRecoveryResult;
 }
 
+const HEX_64 = /^[0-9a-f]{64}$/;
+
+/** Staged next token beside `generated_values.json` (0600) so non-interactive `--approve <hash>` reruns get the same plan hash without mutating `generated_values.json` before approval. */
+export function nextEdgeOriginTokenFile(deps: Pick<PhaseDeps, "paths">): string {
+  return `${generatedValuesFile(deps)}.edge-origin-token.next`;
+}
+
 const RELOAD_COMMAND: Record<EdgeProxy, string> = {
-  caddy: `docker compose -f ${EDGE_DIR}/compose.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile`,
-  nginx: `docker compose -f ${EDGE_DIR}/compose.yaml exec -T nginx nginx -t && docker compose -f ${EDGE_DIR}/compose.yaml exec -T nginx nginx -s reload`,
-  openlitespeed: `docker compose -f ${EDGE_DIR}/compose.yaml exec -T openlitespeed ${OPENLITESPEED_COMMAND} reload`,
+  caddy: `docker compose -p ${EDGE_PROJECT} -f ${EDGE_DIR}/compose.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null`,
+  nginx: `docker compose -p ${EDGE_PROJECT} -f ${EDGE_DIR}/compose.yaml exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null`,
+  openlitespeed: `docker compose -p ${EDGE_PROJECT} -f ${EDGE_DIR}/compose.yaml exec -T openlitespeed ${OPENLITESPEED_COMMAND.reload} < /dev/null`,
 };
 
 async function installSnippetOnServer(
@@ -101,16 +112,19 @@ async function installSnippetOnServer(
   const cmd = [
     "set -eu",
     "umask 077",
-    `mkdir -p ${shellQuote(dir)}`,
+    `mkdir -p ${shellQuote(EDGE_DIR)} ${shellQuote(dir)}`,
     `chmod 700 ${shellQuote(dir)}`,
-    `if [ -f ${shellQuote(path)} ]; then cp ${shellQuote(path)} ${shellQuote(`${path}.previous`)}; fi`,
-    `cat > ${shellQuote(`${path}.new`)}`,
-    `mv -f ${shellQuote(`${path}.new`)} ${shellQuote(path)}`,
-    `if ! ${RELOAD_COMMAND[input.proxy]}; then`,
-    `  if [ -f ${shellQuote(`${path}.previous`)} ]; then mv -f ${shellQuote(`${path}.previous`)} ${shellQuote(path)}; else rm -f ${shellQuote(path)}; fi`,
-    "  exit 1",
-    "fi",
-    `rm -f ${shellQuote(`${path}.previous`)}`,
+    "(",
+    "  flock 9",
+    `  if [ -f ${shellQuote(path)} ]; then cp ${shellQuote(path)} ${shellQuote(`${path}.previous`)}; fi`,
+    `  cat > ${shellQuote(`${path}.new`)}`,
+    `  mv -f ${shellQuote(`${path}.new`)} ${shellQuote(path)}`,
+    `  if ! ${RELOAD_COMMAND[input.proxy]}; then`,
+    `    if [ -f ${shellQuote(`${path}.previous`)} ]; then mv -f ${shellQuote(`${path}.previous`)} ${shellQuote(path)}; else rm -f ${shellQuote(path)}; fi`,
+    "    exit 1",
+    "  fi",
+    `  rm -f ${shellQuote(`${path}.previous`)}`,
+    `) 9> ${shellQuote(`${EDGE_DIR}/.lock`)}`,
   ].join("\n");
   const result = await remote.run(cmd, { input: input.content, timeoutMs: 60_000 });
   if (result.exitCode !== 0) {
@@ -171,7 +185,7 @@ export async function rotateEdgeOriginToken(
     );
   }
 
-  const { envVar, apiKey } = requireThirdPartyEdgeKey(deps, edgeId);
+  const { apiKey } = requireThirdPartyEdgeKey(deps, edgeId);
   let resourceId = options.resourceId;
   if (resourceId === undefined) {
     const idOutputName = edge.terraform.root?.resourceIdOutput;
@@ -181,7 +195,6 @@ export async function rotateEdgeOriginToken(
         : await infrastructureOutputs(deps, plan, {
             ...(options.services?.engine === undefined ? {} : { engine: options.services.engine }),
             ...(options.preference === undefined ? {} : { preference: options.preference }),
-            engineEnv: { [envVar]: apiKey },
           });
     const raw = idOutputName === undefined ? undefined : outputs?.[idOutputName];
     resourceId = raw === undefined || raw === null ? undefined : String(raw);
@@ -200,11 +213,24 @@ export async function rotateEdgeOriginToken(
   const command = options.command ?? "opscrew rotate edge-origin-token";
 
   // B4: If an earlier rotation stopped after recording `previous`, resume with that exact pair so
-  // the token the edge may still be sending is never dropped.
+  // the token the edge may still be sending is never dropped. Otherwise stage `next` in a separate
+  // 0600 file before approval (without touching `generated_values.json`) so a non-interactive
+  // `--approve <hash>` rerun computes the exact same plan hash.
   const resuming = existing.previous !== undefined;
-  const next = resuming
-    ? existing.current
-    : generateEdgeOriginToken(options.randomBytes ?? nodeRandomBytes);
+  const nextFile = nextEdgeOriginTokenFile(deps);
+  let next: string;
+  if (resuming) {
+    next = existing.current;
+  } else {
+    const kept = (await readTextIfExists(nextFile))?.trim();
+    const validKept =
+      kept !== undefined && HEX_64.test(kept) && kept !== existing.current ? kept : undefined;
+    next = validKept ?? generateEdgeOriginToken(options.randomBytes ?? nodeRandomBytes);
+    if (validKept !== next) {
+      await mkdir(dirname(nextFile), { recursive: true, mode: 0o700 });
+      await writeFileAtomic(nextFile, `${next}\n`, { mode: 0o600 });
+    }
+  }
   const previous = resuming ? (existing.previous as string) : existing.current;
   deps.redactor.addLiteral(next, "edge-origin-token");
   deps.redactor.addLiteral(previous, "edge-origin-token");
@@ -288,6 +314,7 @@ export async function rotateEdgeOriginToken(
     );
   }
   await writeEdgeOriginToken(deps, { current: next });
+  await rm(nextFile, { force: true });
   await recordRotation(deps, [EDGE_ORIGIN_TOKEN_CREDENTIAL]);
   const copy = await refreshRecoveryCopy(deps, plan);
 

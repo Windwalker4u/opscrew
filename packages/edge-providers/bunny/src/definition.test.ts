@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { definition } from "./definition";
 import { BUNNY_EDGE_MODULE_FILES } from "./module";
+import { renderBunnyRoot } from "./root";
 
 describe("@opscrew/edge-provider-bunny", () => {
   it("exposes Bunny.net capabilities, shared-header auth, dynamic-ips, and Terraform metadata", () => {
@@ -49,5 +50,24 @@ describe("@opscrew/edge-provider-bunny", () => {
     // Security invariant (ADR 0038 D6): origin verification header NEVER lives in Terraform state.
     expect(main).not.toContain("SetRequestHeader");
     expect(main).not.toContain("X-OpsCrew-Origin-Token");
+  });
+
+  it("falls back to ipv6Expr for origin_host via coalesce() so IPv6-only servers work", () => {
+    const root = renderBunnyRoot({
+      appName: "shop",
+      domain: "shop.example.com",
+      zone: "example.com",
+      www: false,
+      proxied: true,
+      manageDns: true,
+      dnsZoneId: 12345,
+      wafCustomRules: true,
+      ipv4Expr: "module.server.ipv4_address",
+      ipv6Expr: "module.server.ipv6_address",
+      hasDomainVar: false,
+    });
+    expect(root.mainLines.join("\n")).toContain(
+      "origin_host      = coalesce(module.server.ipv4_address, module.server.ipv6_address)",
+    );
   });
 });

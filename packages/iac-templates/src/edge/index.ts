@@ -17,6 +17,7 @@ import {
 } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { IMAGES } from "../pins";
+import { trustsCompactEdgeRealIp, usesCloudflare } from "../predicates";
 import { notOnServer, wrongTarget } from "../providers";
 import { memoryLimit } from "../runtime/components";
 import { CATCH_ALL_SITES, composeLiteral, hardened } from "../runtime/services";
@@ -306,7 +307,9 @@ const CADDY_HEALTHCHECK = {
  */
 function caddyEdge(plan: DeployPlan, ranges: readonly string[]) {
   const local = plan.target.provider === "localhost";
-  const edgeId = activeEdgeProvider(plan) ?? "cloudflare";
+  const edgeId = trustsCompactEdgeRealIp(plan)
+    ? (activeEdgeProvider(plan) ?? "cloudflare")
+    : "cloudflare";
   const main = caddyfile(local ? [] : ranges, local, edgeId);
   return {
     services: {
@@ -418,7 +421,9 @@ function certbotService() {
 function openlitespeedEdge(plan: DeployPlan, ranges: readonly string[]) {
   const local = plan.target.provider === "localhost";
   const certbot = !local;
-  const edgeId = activeEdgeProvider(plan) ?? "cloudflare";
+  const edgeId = trustsCompactEdgeRealIp(plan)
+    ? (activeEdgeProvider(plan) ?? "cloudflare")
+    : "cloudflare";
   const conf = openlitespeedConf(local, local ? [] : ranges, edgeId);
   const files = {
     "openlitespeed-conf": { target: OPENLITESPEED_INPUT.conf, content: conf },
@@ -513,12 +518,17 @@ export function renderEdgeCompose(
   cloudflareRanges: readonly string[] = [],
 ): RenderedFile {
   const proxy = edgeProxy(plan);
+  // Dynamic-IP edges (such as Bunny.net) must never combine Cloudflare's CIDRs with their own
+  // real-IP header; keep compact-CIDR ranges only for compact-CIDR edges and Cloudflare hosts
+  // sharing a server with Cloudflare previews.
+  const trustedRanges =
+    trustsCompactEdgeRealIp(plan) || usesCloudflare(plan) ? cloudflareRanges : [];
   const front =
     proxy === "caddy"
-      ? caddyEdge(plan, cloudflareRanges)
+      ? caddyEdge(plan, trustedRanges)
       : proxy === "nginx"
         ? nginxEdge(plan)
-        : openlitespeedEdge(plan, cloudflareRanges);
+        : openlitespeedEdge(plan, trustedRanges);
   const document = {
     name: EDGE_PROJECT,
     [EDGE_VERSION_KEY]: EDGE_VERSION,

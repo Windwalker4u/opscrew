@@ -1138,9 +1138,11 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
     `  rm -f ${replacedProxies(proxy)
       .map((p) => `${EDGE}/sites/${app}.${EDGE_PROXIES[p].site}`)
       .join(" ")}`,
-    newTls
-      ? `  rm -f ${tlsFiles
-          .split(" ")
+    newTls || originTokenFile !== undefined
+      ? `  rm -f ${[
+          ...tlsFiles.split(" "),
+          ...(originTokenFile === undefined ? [] : [originTokenFile]),
+        ]
           .map((f) => `${tls}/${f}.previous`)
           .join(" ")}`
       : `  rm -rf ${tls}`,
