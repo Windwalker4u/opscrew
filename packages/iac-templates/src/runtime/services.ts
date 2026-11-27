@@ -1,5 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are Compose syntax, not JavaScript templates.
 import { httpsPortSuffix, LOCALHOST_TLS } from "../edge/localhost";
+import type { SharedOriginHeader } from "../edge/origin-token";
 import { IMAGES } from "../pins";
 import type { AppEnvironment } from "../runtime-dir";
 import { CLOUDFLARED_METRICS } from "../tunnel";
@@ -135,6 +136,12 @@ export interface CaddySite {
   realIp?: boolean | undefined;
   /** A preview's site: every response also carries `X-Robots-Tag: noindex`. */
   noindex?: boolean | undefined;
+  /**
+   * Shared-header edge protection (ADR 0038 D6, Bunny.net / Gcore): imports the 0600 token check
+   * file before `reverse_proxy`, strips the secret header upstream, and forwards `realIpHeader`
+   * as `X-Forwarded-For` only after the token check passes.
+   */
+  sharedOriginHeader?: SharedOriginHeader | undefined;
 }
 
 /**
@@ -344,13 +351,22 @@ function siteBlock(site: CaddySite, hosts: readonly string[], first: readonly st
     "\t}",
     ...BASELINE_HEADERS.map(([name, value]) => `\theader ?${name} "${value}"`),
   ];
+  const sharedHeader = site.sharedOriginHeader;
   const proxy = [
-    ...(site.realIp ? ["\t\theader_up X-Forwarded-For {client_ip}"] : []),
+    ...(sharedHeader !== undefined
+      ? [
+          `\t\theader_up -${sharedHeader.headerName}`,
+          `\t\theader_up X-Forwarded-For {http.request.header.${sharedHeader.realIpHeader}}`,
+        ]
+      : site.realIp
+        ? ["\t\theader_up X-Forwarded-For {client_ip}"]
+        : []),
     ...(site.versionDir === undefined
       ? []
       : ["\t\tlb_try_duration 30s", "\t\tlb_try_interval 250ms"]),
   ];
   lines.push(
+    ...(sharedHeader === undefined ? [] : [`\timport ${sharedHeader.file}`]),
     ...(site.versionDir === undefined
       ? []
       : [

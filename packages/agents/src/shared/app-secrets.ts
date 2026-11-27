@@ -45,6 +45,15 @@ export const MonitoringValuesSchema = z.strictObject({
   owner: z.strictObject({ plan: z.string(), server: z.string(), interface: z.string() }).optional(),
 });
 
+/** The shared-header origin-verification token kept in `generated_values.json` (ADR 0038 D6). */
+export const EdgeOriginTokenSchema = z.strictObject({
+  current: z.string().regex(/^[0-9a-f]{64}$/),
+  previous: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
+});
+
 /** The generated values provision keeps (`generated_values.json`), as far as they are secrets. */
 export const GeneratedValuesSchema = z.object({
   dbPassword: z.string().min(1).optional(),
@@ -58,6 +67,8 @@ export const GeneratedValuesSchema = z.object({
   monitoring: MonitoringValuesSchema.optional().catch(undefined),
   /** PostgreSQL extensions recorded per service when provision creates the database (045). */
   postgresExtensions: z.record(z.string(), z.array(z.string())).optional(),
+  /** Shared origin-verification header token(s) for `shared-header` edges (Bunny.net, Gcore). */
+  edgeOriginToken: EdgeOriginTokenSchema.optional().catch(undefined),
 });
 
 /**
@@ -121,6 +132,10 @@ export async function registerAppSecrets(
   const { grafanaAdminPassword, postgresPassword } = generated.monitoring ?? {};
   for (const password of [grafanaAdminPassword, postgresPassword]) {
     if (password !== undefined) deps.redactor.addLiteral(password, "monitoring-password");
+  }
+  const { current: edgeCurrent, previous: edgePrevious } = generated.edgeOriginToken ?? {};
+  for (const token of [edgeCurrent, edgePrevious]) {
+    if (token !== undefined) deps.redactor.addLiteral(token, "edge-origin-token");
   }
 }
 

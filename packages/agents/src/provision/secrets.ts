@@ -89,6 +89,7 @@ import type { ProvisionServices } from "./types";
 const KEPT_VALUES = [
   "originTls",
   "originTlsNext",
+  "edgeOriginToken",
   "network",
   "grants",
   "monitoring",
@@ -965,6 +966,7 @@ export function deploySecrets(input: {
   environment: AppEnvironment;
   tunnel?: { serviceTokenId: string; serviceTokenSecret: string };
   originTls?: string;
+  edgeOriginToken?: string;
   servers?: readonly ServerReach[];
   offsite?: string;
 }): Record<string, string> {
@@ -996,6 +998,9 @@ export function deploySecrets(input: {
         }
       : {}),
     ...(input.originTls !== undefined ? { [DEPLOY_SECRETS.originTls]: input.originTls } : {}),
+    ...(input.edgeOriginToken !== undefined
+      ? { [DEPLOY_SECRETS.edgeOriginToken]: input.edgeOriginToken }
+      : {}),
     ...(input.offsite !== undefined ? { [OFFSITE_ENV_SECRET]: input.offsite } : {}),
   };
 }

@@ -7,6 +7,7 @@
 import { edgeProvider } from "@opscrew/edge-providers";
 import { BASELINE_HEADERS, HSTS, shellQuote, splitByOrigin } from "../runtime/services";
 import { httpsPortSuffix, LOCALHOST_TLS } from "./localhost";
+import { nginxHeaderVar, type SharedOriginHeader } from "./origin-token";
 
 /**
  * The upstream group of the edge's kamal-proxy in nginx's configuration: a site, and the user's
@@ -246,8 +247,15 @@ export interface NginxSite {
    * with the webroot, and the HTTPS server for them is left out.
    */
   beforeCertificate?: boolean;
-  /** Cloudflare's IP ranges, for an app its proxy serves: the visitor's address comes from them. */
+  /** Compact-CIDR edge IP ranges, for an app its proxy serves: the visitor's address comes from them. */
   realIpFrom?: readonly string[] | undefined;
+  /** Real-IP header name when `realIpFrom` is set (defaults to Cloudflare's `CF-Connecting-IP`). */
+  realIpHeader?: string | undefined;
+  /**
+   * Shared-header edge protection (ADR 0038 D6, Bunny.net / Gcore): includes the 0600 token check
+   * file before `location /` (`proxy_pass`) and before trusting `realIpHeader`.
+   */
+  sharedOriginHeader?: SharedOriginHeader | undefined;
   /**
    * The hostnames among `hosts` that only redirect to `https://<the first other host>` with the
    * path and query (308): `www.<domain>`. They keep their certificate, and with origin TLS the
@@ -284,9 +292,11 @@ function byRedirect(site: NginxSite, hosts: readonly string[]) {
  */
 function serve(site: NginxSite, o: { hsts: boolean; h3: boolean }): string[] {
   const header = (name: string, value: string) => `\tadd_header ${name} "${value}" always;`;
-  const realIp = site.realIpFrom ?? [];
-  const realIpHeader = edgeProvider("cloudflare").capabilities.realIpHeader;
+  const sharedHeader = site.sharedOriginHeader;
+  const realIp = sharedHeader === undefined ? (site.realIpFrom ?? []) : [];
+  const realIpHeader = site.realIpHeader ?? edgeProvider("cloudflare").capabilities.realIpHeader;
   return [
+    ...(sharedHeader === undefined ? [] : [`\tinclude ${sharedHeader.file};`]),
     ...realIp.map((range) => `\tset_real_ip_from ${range};`),
     ...(realIp.length > 0 ? [`\treal_ip_header ${realIpHeader};`] : []),
     ...(o.hsts ? [header("Strict-Transport-Security", HSTS)] : []),
@@ -297,7 +307,12 @@ function serve(site: NginxSite, o: { hsts: boolean; h3: boolean }): string[] {
     "\tproxy_set_header Host $host;",
     "\tproxy_set_header Upgrade $http_upgrade;",
     "\tproxy_set_header Connection $connection_upgrade;",
-    "\tproxy_set_header X-Forwarded-For $remote_addr;",
+    ...(sharedHeader === undefined
+      ? ["\tproxy_set_header X-Forwarded-For $remote_addr;"]
+      : [
+          `\tproxy_set_header ${sharedHeader.headerName} "";`,
+          `\tproxy_set_header X-Forwarded-For ${nginxHeaderVar(sharedHeader.realIpHeader)};`,
+        ]),
     "\tproxy_set_header X-Forwarded-Proto $scheme;",
     "\tproxy_set_header X-Forwarded-Host $host;",
     "\tproxy_read_timeout 300s;",

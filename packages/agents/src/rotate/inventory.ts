@@ -13,6 +13,7 @@ import {
   serviceSecrets,
   serviceSpec,
   tunnelMode,
+  usesSharedOriginHeader,
   usesTunnel,
 } from "@opscrew/iac-templates";
 import {
@@ -41,6 +42,7 @@ export type CredentialKind =
   | "wireguard-key"
   | "device-login"
   | "cloudflare-token"
+  | "edge-origin-token"
   | "state-passphrase"
   | "add-on"
   | "recovery-key"
@@ -314,6 +316,15 @@ export async function credentialInventory(
           .map((v) => v.name),
       ),
     );
+    if (usesSharedOriginHeader(plan) && generated.edgeOriginToken !== undefined) {
+      made.push({
+        name: "edge-origin-token",
+        kind: "edge-origin-token",
+        rotation: { mode: "seamless" },
+        changes:
+          "The server proxy accepts both old and new origin tokens while the edge switches to the new token, then narrows to the new token only.",
+      });
+    }
   }
 
   const firstAppProd = paths.app === undefined && paths.environment === "prod";

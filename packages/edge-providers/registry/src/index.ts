@@ -1,16 +1,17 @@
 /**
- * The built-in edge proxy providers (ADR 0038): the one place OpsCrew reads edge provider facts
- * from. Every definition is validated when this module loads.
+ * The built-in DNS and edge proxy providers (ADR 0038): the one place OpsCrew reads edge provider
+ * facts from. Every definition is validated when this module loads.
  */
 import type { EdgeProviderDefinition } from "@opscrew/contracts";
 import { listText, OpsCrewError } from "@opscrew/core";
+import { definition as bunny } from "@opscrew/edge-provider-bunny";
 import { definition as cloudflare } from "@opscrew/edge-provider-cloudflare";
 import { validateEdgeProvider } from "./validate";
 
 export { validateEdgeProvider } from "./validate";
 
 /** The built-in edge proxy providers, in order. */
-export const EDGE_PROVIDERS: readonly EdgeProviderDefinition[] = [cloudflare].map(
+export const EDGE_PROVIDERS: readonly EdgeProviderDefinition[] = [cloudflare, bunny].map(
   validateEdgeProvider,
 );
 

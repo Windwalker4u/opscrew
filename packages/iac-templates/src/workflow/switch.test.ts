@@ -461,5 +461,46 @@ describe.skipIf(!shWorks())(
       expect(read(`${appsDir()}/shop/.env`)).toBe(`APP_IMAGE=${OLD}\n`);
       expect(route("shop")).toBe("shop-app-2:3000 shop.localhost");
     });
+
+    it("keeps /srv/edge/tls/<app>/origin-token.<ext> after a Bunny deploy and restores it on reload failure", () => {
+      const base = testPlan({ domain: "shop.example.com" });
+      const bunny = DeployPlanSchema.parse({
+        ...base,
+        dns: { ...base.dns, provider: "bunny", zone: "example.com", proxied: true },
+        security: { ...base.security, httpAllowedFrom: "edge" },
+      });
+      const files = [
+        renderCompose(bunny),
+        ...renderRuntimeFiles(bunny),
+        ...renderEdgeSite(bunny, testContext()),
+      ];
+      const dir = runtimeDir(bunny);
+      for (const file of files) {
+        write(`${appsDir()}/${bunny.app.name}/${file.path.slice(dir.length + 1)}`, file.content);
+      }
+      const edgeFiles: EdgeFiles = { originTls: false, additions: false, originToken: true };
+      const tokenPath = `${edgeDir()}/tls/shop/origin-token.caddy`;
+
+      // First deploy: uploaded .new snippet is swapped in and MUST survive after proxy reload.
+      write(`${tokenPath}.new`, "respond @bad_origin_token 403 # token-v1\n");
+      const first = run(switchCommands(bunny, [], edgeFiles));
+      expect(first.status, first.output).toBe(0);
+      expect(read(tokenPath)).toBe("respond @bad_origin_token 403 # token-v1\n");
+      expect(existsSync(`${tokenPath}.new`)).toBe(false);
+      expect(existsSync(`${tokenPath}.previous`)).toBe(false);
+
+      // Second deploy with a new token: swaps in v2 and cleans up .previous.
+      write(`${tokenPath}.new`, "respond @bad_origin_token 403 # token-v2\n");
+      const second = run(switchCommands(bunny, [], edgeFiles));
+      expect(second.status, second.output).toBe(0);
+      expect(read(tokenPath)).toBe("respond @bad_origin_token 403 # token-v2\n");
+      expect(existsSync(`${tokenPath}.previous`)).toBe(false);
+
+      // Failed reload: restores token-v2 cleanly instead of leaving broken v3.
+      write(`${tokenPath}.new`, "respond @bad_origin_token 403 # token-v3-broken\n");
+      const failed = run(switchCommands(bunny, [], edgeFiles), { EDGE_UP_FAIL: "1" });
+      expect(failed.status).toBe(1);
+      expect(read(tokenPath)).toBe("respond @bad_origin_token 403 # token-v2\n");
+    });
   },
 );

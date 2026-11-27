@@ -1978,7 +1978,11 @@
       "properties": {
         "provider": {
           "type": "string",
-          "enum": ["cloudflare", "none"]
+          "enum": ["cloudflare", "bunny", "none"]
+        },
+        "edge": {
+          "type": "string",
+          "enum": ["bunny"]
         },
         "domain": {
           "type": "string",

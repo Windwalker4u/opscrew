@@ -129,6 +129,13 @@ Kafka and Redpanda without their login have nothing to rotate; the list says so.
   [GitHub Pages](github-pages.md)** gets them through its GitHub secrets and a deploy, which
   OpsCrew starts and follows to its end.
 
+### Shared-header edge origin token
+
+When your app runs behind a shared-header edge proxy such as [Bunny.net](bunny.md),
+`npx opscrew rotate edge-origin-token` rotates `X-OpsCrew-Origin-Token` without downtime: it sets
+the server's reverse proxy to accept both the new and previous tokens, switches the edge rule after
+hash-bound approval, and then narrows the server to the new token only.
+
 ### SSH keys
 
 | Name | What it opens |

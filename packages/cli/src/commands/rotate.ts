@@ -27,6 +27,7 @@ import {
   rotateAccessToken,
   rotateBeszel,
   rotateDevice,
+  rotateEdgeOriginToken,
   rotateGrant,
   rotateLocalServices,
   rotateMonitoring,
@@ -93,6 +94,7 @@ const SINGLES = [
   "network",
   "access-token",
   "tunnel-token",
+  "edge-origin-token",
   "state-passphrase",
   "recovery-key",
   "portainer",
@@ -701,6 +703,17 @@ async function rotate(
           provision,
           ...(services.vpn === undefined ? {} : { server: services.vpn }),
           ...engine,
+        })
+      ).copy;
+      break;
+    case "edge-origin-token":
+      copy = (
+        await rotateEdgeOriginToken(deps, plan, {
+          github: github(),
+          ...engine,
+          ...(provision.remote === undefined ? {} : { remote: provision.remote }),
+          ...(provision.edgeFetch === undefined ? {} : { fetch: provision.edgeFetch }),
+          command: `opscrew rotate edge-origin-token${givenFlags(flags)}`,
         })
       ).copy;
       break;

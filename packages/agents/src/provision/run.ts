@@ -10,6 +10,7 @@ import {
   plural,
   readTextIfExists,
 } from "@opscrew/core";
+import { edgeProvider } from "@opscrew/edge-providers";
 import {
   additionsPath,
   appServerVariables,
@@ -23,6 +24,8 @@ import {
   renderCloudInit,
   renderStorage,
   rootMainFile,
+  tunnelMode,
+  usesSharedOriginHeader,
   usesTunnel,
   webOnlyFromCloudflare,
   withServerImports,
@@ -157,6 +160,12 @@ import {
 import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { deploySetupDependabot } from "./dependabot";
 import { renderedServers, requireNoSmallerDisk } from "./disk-guard";
+import {
+  ensureEdgeOriginToken,
+  formatEdgeOriginTokenSecret,
+  setupThirdPartyEdge,
+  syncEdgeOriginHeader,
+} from "./edge-origin-token";
 import { requireNoMoveInProgress, warnInTempFolder } from "./guard";
 import { type LeavingHome, switchAccessMode } from "./home-switch";
 import { monitoringHostPlans } from "./monitoring";
@@ -677,6 +686,7 @@ async function provisionFlow(
   if (previews && early !== undefined) requireServerForPreviews(early.facts, plan.app.name, again);
   if (early !== undefined) requireServerFit(deps, plan, early, rerun);
   const cloudflare = await setupCloudflare(deps, plan, services);
+  const thirdPartyEdge = await setupThirdPartyEdge(deps, plan, services);
   // Previews below the app's zone (FR-2231): the zone checked again, read-only, before any plan.
   const belowZone = appZoneDomain(plan);
   if (belowZone !== undefined && cloudflare !== undefined) {
@@ -856,6 +866,9 @@ async function provisionFlow(
 
   // 3. Engine, state encryption, deploy key
   const { engine, env: engineEnv } = await provisionEngine(deps, plan, options);
+  if (thirdPartyEdge !== undefined) {
+    engineEnv[thirdPartyEdge.envVar] = thirdPartyEdge.apiKey;
+  }
   const deployKey = await ensureDeployKey(deps.paths, deps.redactor);
   if (deployKey.created) deps.reporter.info("Created a dedicated SSH deploy key for this project.");
   // A preview environment's deploy key stays here; GitHub gets only its preview key.
@@ -1085,6 +1098,7 @@ async function provisionFlow(
     github,
     deployPublicKey: deployKey.publicKeyOpenSsh,
     cloudflare,
+    ...(thirdPartyEdge !== undefined ? { thirdPartyEdge } : {}),
     server: knownServer,
     ...(ownRender !== undefined ? { own: ownRender } : {}),
     edge: site.edge,
@@ -1507,6 +1521,36 @@ async function provisionFlow(
   plan = record(applyUnrecorded);
   await writePlanIfChanged(deps, persisted(plan));
 
+  // 6b. Shared-header edge origin-verification token (ADR 0038 D6): generate once (0600 locally),
+  // approve by hash, and sync via the edge provider's API connector (never in Terraform state).
+  let edgeOriginTokenValue: string | undefined;
+  if (usesSharedOriginHeader(plan) && !tunnelMode(plan) && thirdPartyEdge !== undefined) {
+    const token = await ensureEdgeOriginToken(deps);
+    const edgeDef = edgeProvider(thirdPartyEdge.id);
+    const idOutputName = edgeDef.terraform.root?.resourceIdOutput;
+    const outputs = await currentOutputs(applied, engine, dir, engineEnv);
+    const rawResourceId = idOutputName === undefined ? undefined : outputs[idOutputName];
+    const resourceId =
+      rawResourceId === undefined || rawResourceId === null ? undefined : String(rawResourceId);
+    if (resourceId === undefined || resourceId === "") {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `OpsCrew could not read ${edgeDef.displayName}'s resource id (${idOutputName ?? "unknown output"}) from Terraform state, so it did not configure the origin-verification header or deploy secret.`,
+        {
+          hint: "Check that the edge resource exists in Terraform state, then run `opscrew provision` again.",
+        },
+      );
+    }
+    await syncEdgeOriginHeader(deps, plan, {
+      resourceId,
+      token: token.current,
+      apiKey: thirdPartyEdge.apiKey,
+      command,
+      ...(services.edgeFetch === undefined ? {} : { fetch: services.edgeFetch }),
+    });
+    edgeOriginTokenValue = formatEdgeOriginTokenSecret(token);
+  }
+
   let secretsTarget: {
     host: string;
     knownHosts: string;
@@ -1739,6 +1783,7 @@ async function provisionFlow(
           environment,
           ...(secretsTarget.tunnel !== undefined ? { tunnel: secretsTarget.tunnel } : {}),
           ...(ctx.originTls !== undefined ? { originTls: originTlsSecret(site.values) } : {}),
+          ...(edgeOriginTokenValue !== undefined ? { edgeOriginToken: edgeOriginTokenValue } : {}),
           ...(serverReach.length > 0 ? { servers: serverReach } : {}),
         }),
         environment.names,

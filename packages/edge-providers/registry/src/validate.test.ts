@@ -1,11 +1,13 @@
 import { OpsCrewError } from "@opscrew/core";
+import { definition as bunny } from "@opscrew/edge-provider-bunny";
 import { definition as cloudflare } from "@opscrew/edge-provider-cloudflare";
 import { describe, expect, it } from "vitest";
 import { validateEdgeProvider } from "./validate";
 
 describe("validateEdgeProvider", () => {
-  it("accepts a valid built-in edge provider definition", () => {
+  it("accepts the built-in Cloudflare and Bunny.net definitions", () => {
     expect(validateEdgeProvider(cloudflare)).toBe(cloudflare);
+    expect(validateEdgeProvider(bunny)).toBe(bunny);
   });
 
   it("refuses a wrong contract version", () => {
@@ -17,15 +19,37 @@ describe("validateEdgeProvider", () => {
   it("refuses dynamic-ips paired with non-shared-header originAuth", () => {
     expect(() =>
       validateEdgeProvider({
-        ...cloudflare,
-        id: "bunny",
+        ...bunny,
         capabilities: {
-          ...cloudflare.capabilities,
+          ...bunny.capabilities,
           originIpFiltering: "dynamic-ips",
           originAuth: "mtls-client-cert",
+          originAuthHeader: undefined,
         },
       }),
     ).toThrow(/shared-header/);
+  });
+
+  it("requires originAuthHeader iff originAuth is shared-header", () => {
+    expect(() =>
+      validateEdgeProvider({
+        ...bunny,
+        capabilities: {
+          ...bunny.capabilities,
+          originAuthHeader: undefined,
+        },
+      }),
+    ).toThrow(/originAuthHeader/);
+
+    expect(() =>
+      validateEdgeProvider({
+        ...cloudflare,
+        capabilities: {
+          ...cloudflare.capabilities,
+          originAuthHeader: "X-OpsCrew-Origin-Token",
+        },
+      }),
+    ).toThrow(/originAuthHeader/);
   });
 
   it("refuses an invalid realIpHeader name", () => {

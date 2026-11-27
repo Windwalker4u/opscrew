@@ -8,9 +8,16 @@
  */
 import { sha256Hex } from "@opscrew/core";
 import { edgeProvider } from "@opscrew/edge-providers";
-import { type DeployPlan, isHostingTarget, isServerlessTarget } from "@opscrew/plan-schema";
+import {
+  activeEdgeProvider,
+  type DeployPlan,
+  type EdgeProviderId,
+  isHostingTarget,
+  isServerlessTarget,
+} from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { IMAGES } from "../pins";
+import { trustsCompactEdgeRealIp, usesCloudflare } from "../predicates";
 import { notOnServer, wrongTarget } from "../providers";
 import { memoryLimit } from "../runtime/components";
 import { CATCH_ALL_SITES, composeLiteral, hardened } from "../runtime/services";
@@ -58,6 +65,14 @@ export {
   OPENLITESPEED_INPUT,
   openlitespeedCachePurge,
 } from "./openlitespeed";
+export {
+  nginxHeaderVar,
+  ORIGIN_TOKEN_FILE,
+  originTokenContainerPath,
+  originTokenServerPath,
+  originTokenSnippet,
+  type SharedOriginHeader,
+} from "./origin-token";
 
 /** The edge's Compose project, and the external network the edge and every app's web service join. */
 export const EDGE_PROJECT = "opscrew-edge";
@@ -205,7 +220,11 @@ export function originPullPem(plan: DeployPlan): string {
  * only the figures, and {@link CATCH_ALL_SITES}. The figures are on with or without monitoring, so
  * every app on a server renders the same edge.
  */
-function caddyfile(ranges: readonly string[], local: boolean): string {
+function caddyfile(
+  ranges: readonly string[],
+  local: boolean,
+  edgeId: EdgeProviderId = "cloudflare",
+): string {
   const comments: string[] = [];
   const options: string[] = [];
   const option = (comment: string, name: string, lines: readonly string[]) => {
@@ -213,7 +232,7 @@ function caddyfile(ranges: readonly string[], local: boolean): string {
     options.push(`\t${name} {`, ...lines.map((line) => `\t\t${line}`), "\t}");
   };
   if (ranges.length > 0) {
-    const edge = edgeProvider("cloudflare");
+    const edge = edgeProvider(edgeId);
     const header = edge.capabilities.realIpHeader;
     option(
       `# Requests from ${edge.displayName}'s addresses carry the visitor's in ${header}.`,
@@ -288,7 +307,10 @@ const CADDY_HEALTHCHECK = {
  */
 function caddyEdge(plan: DeployPlan, ranges: readonly string[]) {
   const local = plan.target.provider === "localhost";
-  const main = caddyfile(local ? [] : ranges, local);
+  const edgeId = trustsCompactEdgeRealIp(plan)
+    ? (activeEdgeProvider(plan) ?? "cloudflare")
+    : "cloudflare";
+  const main = caddyfile(local ? [] : ranges, local, edgeId);
   return {
     services: {
       caddy: {
@@ -399,7 +421,10 @@ function certbotService() {
 function openlitespeedEdge(plan: DeployPlan, ranges: readonly string[]) {
   const local = plan.target.provider === "localhost";
   const certbot = !local;
-  const conf = openlitespeedConf(local, local ? [] : ranges);
+  const edgeId = trustsCompactEdgeRealIp(plan)
+    ? (activeEdgeProvider(plan) ?? "cloudflare")
+    : "cloudflare";
+  const conf = openlitespeedConf(local, local ? [] : ranges, edgeId);
   const files = {
     "openlitespeed-conf": { target: OPENLITESPEED_INPUT.conf, content: conf },
     "openlitespeed-catchall": {
@@ -493,12 +518,17 @@ export function renderEdgeCompose(
   cloudflareRanges: readonly string[] = [],
 ): RenderedFile {
   const proxy = edgeProxy(plan);
+  // Dynamic-IP edges (such as Bunny.net) must never combine Cloudflare's CIDRs with their own
+  // real-IP header; keep compact-CIDR ranges only for compact-CIDR edges and Cloudflare hosts
+  // sharing a server with Cloudflare previews.
+  const trustedRanges =
+    trustsCompactEdgeRealIp(plan) || usesCloudflare(plan) ? cloudflareRanges : [];
   const front =
     proxy === "caddy"
-      ? caddyEdge(plan, cloudflareRanges)
+      ? caddyEdge(plan, trustedRanges)
       : proxy === "nginx"
         ? nginxEdge(plan)
-        : openlitespeedEdge(plan, cloudflareRanges);
+        : openlitespeedEdge(plan, trustedRanges);
   const document = {
     name: EDGE_PROJECT,
     [EDGE_VERSION_KEY]: EDGE_VERSION,

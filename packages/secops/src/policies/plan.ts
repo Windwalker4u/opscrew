@@ -7,7 +7,7 @@ import type {
 } from "@opscrew/contracts";
 import { isRecord } from "@opscrew/core";
 import { edgeProvider } from "@opscrew/edge-providers";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { activeEdgeProvider, type DeployPlan } from "@opscrew/plan-schema";
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
 
 const OPEN_TO_ALL = new Set(["0.0.0.0/0", "::/0"]);
@@ -314,15 +314,21 @@ function providerPolicies(
  */
 export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan): PolicyResult[] {
   const resources = plannedResources(planJson);
-  const proxiedBehindCloudflare =
-    deployPlan.dns.provider === "cloudflare" &&
-    deployPlan.dns.proxied &&
+  const activeEdge = activeEdgeProvider(deployPlan);
+  const proxiedBehindCompactEdge =
+    activeEdge !== undefined &&
+    edgeProvider(activeEdge).capabilities.originIpFiltering === "compact-cidrs" &&
     deployPlan.security.httpAllowedFrom === "edge";
   const results = PROVIDERS.flatMap((provider) =>
-    providerPolicies(provider, planJson, resources, deployPlan, proxiedBehindCloudflare),
+    providerPolicies(provider, planJson, resources, deployPlan, proxiedBehindCompactEdge),
   );
 
-  if (deployPlan.dns.provider === "cloudflare" && deployPlan.dns.proxied && deployPlan.dns.domain) {
+  if (
+    activeEdge === "cloudflare" &&
+    deployPlan.dns.provider === "cloudflare" &&
+    deployPlan.dns.proxied &&
+    deployPlan.dns.domain
+  ) {
     const domain = deployPlan.dns.domain;
     const recordType = edgeProvider(deployPlan.dns.provider).terraform.dnsRecordResourceType;
     const appRecords = resources.filter(
@@ -344,6 +350,17 @@ export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan):
           record.address,
         ),
       );
+    }
+  }
+
+  if (activeEdge !== undefined) {
+    const providerChecks = edgeProvider(activeEdge).secops?.checkPlan(resources);
+    if (providerChecks !== undefined) {
+      for (const check of providerChecks) {
+        results.push(
+          result(check.id, check.title, check.severity, check.passed, check.detail, check.resource),
+        );
+      }
     }
   }
   return results;
