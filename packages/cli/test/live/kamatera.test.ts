@@ -15,14 +15,18 @@
  * 9. the run's snapshots deleted through Kamatera's API while the server exists (Kamatera reaches
  *    a snapshot only through its server), always;
  * 10. destroy: no server of the app and no `<name>(n)` duplicate left, nothing in Cloudflare;
- * 11. neither value in any output, log, audit entry, state file, plan or commit.
+ * 11. neither value in any output, log, audit entry, state file, plan or commit, and the root
+ *     password Kamatera generated (which only the state holds) in none but the state.
  * Whatever fails after provision, the cleanup still destroys the app and fails the run on any
  * server or duplicate of it left at Kamatera.
  */
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { readServerAddresses } from "@opscrew/agents";
 import type { ServerSnapshotApi } from "@opscrew/contracts";
+import { isRecord, readTextIfExists, tfstateFile } from "@opscrew/core";
+import { selectEngine, stateKeyName, tofuEncryptionEnv } from "@opscrew/iac-engine";
 import { cloudTarget } from "@opscrew/iac-templates";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
@@ -70,6 +74,30 @@ if (ENV[GATE] === "1" && MISSING.length > 0) {
 
 /** The check `opscrew secure` runs on a server with no cloud firewall, as SECURITY_REPORT.md titles it. */
 const FIREWALL_CHECK = "The server's own firewall lets in only what the plan allows";
+
+/**
+ * The scrubber's label of the root password Kamatera generated for the app's server: the engine's
+ * state holds it by design (`generated_password`), and nothing else may.
+ */
+const ROOT_PASSWORD = "kamatera-root-password";
+
+/** Each `generated_password` of a `kamatera_server` in the engine's `show -json` of the state. */
+function generatedPasswords(shown: unknown): string[] {
+  const out: string[] = [];
+  const walk = (module: unknown) => {
+    if (!isRecord(module)) return;
+    for (const resource of Array.isArray(module.resources) ? module.resources : []) {
+      if (!isRecord(resource) || resource.type !== "kamatera_server") continue;
+      const password = isRecord(resource.values) ? resource.values.generated_password : undefined;
+      if (typeof password === "string" && password !== "") out.push(password);
+    }
+    for (const child of Array.isArray(module.child_modules) ? module.child_modules : []) {
+      walk(child);
+    }
+  };
+  if (isRecord(shown) && isRecord(shown.values)) walk(shown.values.root_module);
+  return out;
+}
 
 /**
  * The results SECURITY_REPORT.md gives the server's own firewall, one per server (`Pass`,
@@ -121,6 +149,44 @@ describe.skipIf(MISSING.length > 0)(
       api ??= cloudProvider("kamatera").connector({ env: credentials }).servers;
       if (api === undefined) throw new Error("OpsCrew's Kamatera connector has no server API.");
       return api;
+    }
+
+    /**
+     * Adds the root password Kamatera generated for the app's server to the scrubber, read from the
+     * engine's state with `show -json`, decrypted with the passphrase the state has now (as the
+     * harness reads the outputs). Nothing is printed from it. One it can't read is a finding, so
+     * step 11 never passes without searching for it.
+     */
+    async function rememberRootPassword(): Promise<void> {
+      const missed = (why: string) => {
+        run.findings.push(`${why}, so the leak search misses Kamatera's root password`);
+      };
+      const plan = await run.readPlan();
+      const engine = await selectEngine("auto", { env: run.env, runner: run.runner });
+      const env = { ...run.env };
+      const passphrase = run.paths().files.statePassphrase;
+      if (engine.info.name === "tofu" && existsSync(passphrase)) {
+        const state = await readTextIfExists(tfstateFile(run.paths()));
+        env.TF_ENCRYPTION = tofuEncryptionEnv((await readFile(passphrase, "utf8")).trim(), {
+          name: stateKeyName(state?.trim() ? state : undefined),
+        });
+      }
+      const shown = await run.runner.run(engine.info.binary, ["show", "-json", "-no-color"], {
+        cwd: join(run.repo, plan.infra.dir),
+        env,
+      });
+      if (shown.exitCode !== 0)
+        return missed(`${engine.info.name} show exited with ${shown.exitCode}`);
+      let passwords: string[];
+      try {
+        passwords = generatedPasswords(JSON.parse(shown.stdout));
+      } catch {
+        return missed(`${engine.info.name} show printed no JSON`);
+      }
+      if (passwords.length === 0)
+        return missed("the state has no kamatera_server generated_password");
+      for (const password of passwords) run.scrubber.add(password, ROOT_PASSWORD);
+      log("observed: Kamatera's root password read from the state, for the leak search");
     }
 
     /** Runs `opscrew secure` and gives SECURITY_REPORT.md. */
@@ -223,6 +289,7 @@ describe.skipIf(MISSING.length > 0)(
         envs.provisioned.add("prod");
         const output = await run.provisionUntilDone("provision");
         await envs.remember("prod");
+        await rememberRootPassword();
         await run.rememberSecretFile(ageKey(), "age-identity");
         expect(takeoverLines(output), "provision's takeover notes").toEqual([]);
         // Fails, naming it, on a `<app>(n)` duplicate.
@@ -361,13 +428,14 @@ ${run.tail(taken.output)}`,
     );
 
     run.step(
-      "11. neither Kamatera value, nor any other secret, in any output, deploy job's log, audit entry, state file, plan or commit",
+      "11. neither Kamatera value, nor any other secret, in any output, deploy job's log, audit entry, state file, plan or commit, and Kamatera's root password only in the state",
       minutes(10),
       async () =>
         run.expectNothingLeaked([
           // Kamatera's provider reads both values from the environment: neither is in a state
-          // file. The root password it generates is, and OpsCrew never reads it.
-          ...(await envs.leaks({ cloudflare: true })),
+          // file. The root password it generates is, by design (and in a saved plan, which holds
+          // the state), and OpsCrew never reads or shows it: it is searched for everywhere else.
+          ...(await envs.leaks({ cloudflare: true, inState: [ROOT_PASSWORD] })),
           ...(await deployLogLeaks(run, deployRuns)),
         ]),
       { always: true },
