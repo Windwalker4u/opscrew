@@ -226,7 +226,7 @@ async function serverToSnapshot(run: SnapshotRun, which: string): Promise<FoundS
   const api = serverApi(run, provider);
   if (api === undefined) throw noToken(run, provider);
   const name = which === APP_SERVER ? plan.app.name : cloudServerName(plan, which);
-  const named = (await api.findAppServers(plan.app.name)).filter((s) => s.name === name);
+  const named = (await api.findAppServers(plan.app.name, [name])).filter((s) => s.name === name);
   const [server] = named;
   if (server === undefined || named.length > 1) {
     const { console: where, noun } = destroyTexts(provider);

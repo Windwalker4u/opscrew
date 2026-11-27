@@ -166,8 +166,14 @@ export interface ServerSnapshot {
  * taken, listed, deleted and restored by command. Taking one only adds a resource.
  */
 export interface ServerSnapshotApi {
-  /** Servers labelled or tagged as created by OpsCrew for `app`. */
-  findAppServers(app: string): Promise<AppServer[]>;
+  /**
+   * Servers labelled or tagged as created by OpsCrew for `app`. `names` are the names at the
+   * provider of the servers the caller means (the plan's, or the ones being deleted): a provider
+   * whose names alone mark the app's servers keeps exactly those (and its duplicates of them), so
+   * another app or environment named `<app>-<something>` is never taken for this one; a provider
+   * with labels or tags may ignore them.
+   */
+  findAppServers(app: string, names?: readonly string[]): Promise<AppServer[]>;
   /** Snapshots the server and resolves when the provider reports it complete. */
   snapshotServer(serverId: string, request: SnapshotRequest): Promise<{ snapshotId: string }>;
   /** The server's snapshots OpsCrew took, oldest first. */

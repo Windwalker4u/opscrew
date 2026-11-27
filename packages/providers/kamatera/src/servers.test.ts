@@ -142,6 +142,44 @@ describe("findAppServers", () => {
       "Delete them in your Kamatera account's console (its Terminate action), then run the command again.",
     );
   });
+
+  // Environment apps are named `<app>-<env>`: staging's `shop-staging` is not prod's `shop`.
+  const SIBLINGS = [
+    server("shop-staging", { id: OTHER_ID }),
+    server("shop-staging(1)", { id: OTHER_ID }),
+    server("shop-staging-worker", { id: OTHER_ID }),
+  ];
+
+  it("given the plan's names, keeps exactly those and never a sibling app's servers", async () => {
+    const { api } = setup({
+      "GET /service/servers": serverList(
+        server("shop"),
+        server("shop-worker", { id: WORKER_ID, power: "off" }),
+        ...SIBLINGS,
+      ),
+    });
+    expect(await api.findAppServers("shop", ["shop", "shop-worker"])).toEqual([
+      { id: "shop", name: "shop", status: "on", nameOnly: true },
+      { id: "shop-worker", name: "shop-worker", status: "off", nameOnly: true },
+    ]);
+    // The sibling's own lookup finds its servers, and stops at its own duplicate.
+    const error = await failure(api.findAppServers("shop-staging", ["shop-staging"]));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain("Kamatera has the server shop-staging(1) in EU-FR:");
+  });
+
+  it("given the plan's names, still stops at a duplicate of one of them", async () => {
+    const { api } = setup({
+      "GET /service/servers": serverList(
+        server("shop"),
+        server("shop-worker(2)", { id: WORKER_ID, datacenter: "US-NY2" }),
+        ...SIBLINGS,
+      ),
+    });
+    const error = await failure(api.findAppServers("shop", ["shop", "shop-worker"]));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain("Kamatera has the server shop-worker(2) in US-NY2:");
+  });
 });
 
 describe("snapshotServer", () => {

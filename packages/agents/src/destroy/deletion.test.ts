@@ -15,6 +15,7 @@ import type {
 } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
+import { kamateraAccount } from "../snapshot/__fixtures__/kamatera";
 import {
   createTestPhaseDeps,
   FakeServers,
@@ -24,6 +25,7 @@ import {
   ScriptedApprovalHandler,
   serverAttributes,
 } from "../testing";
+import { cancelDates } from "./cancel";
 import {
   assertDeletionPlan,
   confirmDeletion,
@@ -726,6 +728,42 @@ describe("listEarlierSnapshots", () => {
     expect(deps.reporter.text()).toBe(
       "warn: OpsCrew could not list the snapshots of shop taken earlier (No Hetzner Cloud token found: set HCLOUD_TOKEN); any there stay and keep billing, so check them in the Hetzner Cloud Console.",
     );
+  });
+});
+
+describe("Kamatera's servers, which only their names mark as the app's", () => {
+  // Staging's app is `shop-staging`, with a duplicate Kamatera left of it; `shop-old` is an extra
+  // server the state still has after plan.yaml dropped it.
+  const ACCOUNT = ["shop", "shop-data", "shop-old", "shop-staging", "shop-staging(1)"];
+
+  it("lists the earlier snapshots of the server being deleted, never a sibling's", async () => {
+    const deps = kamateraAccount(await createTestPhaseDeps(), ACCOUNT);
+    const scope = { deps, provider: "kamatera" as const, app: "shop", command: "opscrew destroy" };
+    expect(await listEarlierSnapshots(scope, { ids: [] })).toEqual(["shop:1"]);
+    expect(await listEarlierSnapshots(scope, { ids: [], name: "shop-data" })).toEqual([
+      "shop-data:2",
+    ]);
+    // Found by its own name, which the state gives, whatever plan.yaml lists now.
+    expect(await listEarlierSnapshots(scope, { ids: [], name: "shop-old" })).toEqual([
+      "shop-old:3",
+    ]);
+    expect(deps.reporter.lines).toEqual([]);
+  });
+
+  it("reads the servers being cancelled back by their names, a sibling's duplicate aside", async () => {
+    const deps = kamateraAccount(await createTestPhaseDeps(), ACCOUNT);
+    const scope = {
+      deps,
+      provider: "kamatera" as const,
+      app: "shop",
+      command: "opscrew provision",
+      what: "removal",
+      phase: "provision" as const,
+    };
+    const old = { provider: "kamatera" as const, module: "module.server_old.", ids: ["shop-old"] };
+    expect(await cancelDates(scope, [{ ...old, name: "shop-old" }], {})).toEqual([
+      "Kamatera did not say when the contract of the server shop-old ends, so OpsCrew cannot tell you the date; see it in Kamatera's console.",
+    ]);
   });
 });
 

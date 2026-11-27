@@ -123,20 +123,26 @@ export function kamateraServerApi(
 
   return {
     /**
-     * The account's servers named `<app>` or `<app>-<name>`, every one `nameOnly` with its name as
-     * its id (Kamatera's servers have no tags; the Terraform id is the name), so the generic
-     * takeover adopts one only after OpsCrew's own apply stopped while creating it. Kamatera's list
-     * shows no state but the power, so a server it is terminating is listed until it is gone.
-     * @throws OpsCrewError `PHASE_PRECONDITION` when the account has `<app>(n)` or
-     * `<app>-<name>(n)`: a duplicate Kamatera renamed so when a create was sent again for a name it
-     * had, which its Terraform provider then loses while it bills. Each is named with its
-     * datacenter, and the user deletes it before OpsCrew goes on.
+     * The account's servers named one of `names`, or without them `<app>` or `<app>-<name>`, every
+     * one `nameOnly` with its name as its id (Kamatera's servers have no tags; the Terraform id is
+     * the name), so the generic takeover adopts one only after OpsCrew's own apply stopped while
+     * creating it. Only `names` tell the app's servers from another app's or environment's named
+     * `<app>-<something>` (`shop-staging`). Kamatera's list shows no state but the power, so a
+     * server it is terminating is listed until it is gone.
+     * @throws OpsCrewError `PHASE_PRECONDITION` when the account has `<name>(n)` for one of those
+     * names: a duplicate Kamatera renamed so when a create was sent again for a name it had, which
+     * its Terraform provider then loses while it bills. Each is named with its datacenter, and the
+     * user deletes it before OpsCrew goes on.
      */
-    async findAppServers(app: string): Promise<AppServer[]> {
+    async findAppServers(app: string, names?: readonly string[]): Promise<AppServer[]> {
       const all = await servers();
+      const ours = (name: string) =>
+        names === undefined ? name === app || name.startsWith(`${app}-`) : names.includes(name);
       // Kamatera's `(1)`; a later number too, as a third create of one name would leave.
-      const renamed = new RegExp(`^${escapeRegExp(app)}(?:-.+)?\\(\\d+\\)$`);
-      const duplicates = all.filter(({ name }) => renamed.test(name));
+      const duplicates = all.filter(({ name }) => {
+        const renamed = /^(.+)\(\d+\)$/.exec(name)?.[1];
+        return renamed !== undefined && ours(renamed);
+      });
       if (duplicates.length > 0) {
         const one = duplicates.length === 1;
         const named = listText(duplicates.map((s) => `${s.name} in ${s.datacenter}`));
@@ -149,7 +155,7 @@ export function kamateraServerApi(
         );
       }
       return all
-        .filter(({ name }) => name === app || name.startsWith(`${app}-`))
+        .filter(({ name }) => ours(name))
         .map(({ name, power }) => ({ id: name, name, status: power, nameOnly: true }));
     },
 

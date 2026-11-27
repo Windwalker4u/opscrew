@@ -529,14 +529,17 @@ export function serverApi(
   return api;
 }
 
-/** The provider's server API and the app's servers as it reports them; a failed lookup stops. */
+/**
+ * The provider's server API and the app's servers as it reports them, looked up with the name of
+ * the server being deleted (`input.name`, else the app's); a failed lookup stops.
+ */
 async function findServers(
   scope: ServerScope,
   input: SnapshotBeforeDeleteInput,
 ): Promise<{ api: ServerSnapshotApi; found: AppServer[] }> {
   const api = serverApi(scope, input);
   try {
-    return { api, found: await api.findAppServers(scope.app) };
+    return { api, found: await api.findAppServers(scope.app, [input.name ?? scope.app]) };
   } catch (error) {
     throw snapshotFailed(scope, error, false);
   }
@@ -838,7 +841,7 @@ export async function listEarlierSnapshots(
     const ids =
       input.ids.length > 0
         ? input.ids
-        : (await api.findAppServers(scope.app))
+        : (await api.findAppServers(scope.app, [name]))
             .filter((server) => server.name === name)
             .map((server) => server.id);
     const listed: string[] = [];

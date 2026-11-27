@@ -142,7 +142,7 @@ const NONE_BOUGHT = (noun: string) => `OpsCrew stopped before planning, so no ${
  * The plan's servers the provider has and the state lacks, before provision's plan (026 plan
  * 4.3). Looked up only after an apply in this environment (its state file, or the marker of one
  * that stopped) and only at a provider whose servers can be listed: the app's servers there
- * (`findAppServers`), by the name of each of the plan's servers the state lacks. A server that is
+ * (`findAppServers`, with the names of the plan's servers there), by the name of each of the plan's servers the state lacks. A server that is
  * not cancelled is taken over (`takeovers`, an `import` block in the plan); one whose tag was never
  * attached (`nameOnly`) only when OpsCrew's last apply here stopped while creating that server
  * ({@link applyMarkerFile} lists its address). A cancelled one (`cancelledUntil`) is never taken
@@ -192,7 +192,10 @@ export async function lostServers(
   );
   const found = new Map<CloudProvider, AppServer[]>();
   for (const provider of new Set(missing.map((s) => s.provider))) {
-    found.set(provider, (await apis.get(provider)?.findAppServers(plan.app.name)) ?? []);
+    const names = planned
+      .filter((s) => s.provider === provider)
+      .map((s) => serverName(plan, s.server));
+    found.set(provider, (await apis.get(provider)?.findAppServers(plan.app.name, names)) ?? []);
   }
   const lost: LostServers = { takeovers: [], notes: [] };
   for (const { server, provider, address } of missing) {
