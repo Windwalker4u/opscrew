@@ -93,18 +93,21 @@ describe("GiteaSchema and DeployPlanSchema.gitea", () => {
       }).success,
     ).toBe(false);
 
-    expect(
-      GiteaSchema.safeParse({
-        enabled: true,
-        version: "28.4.0",
-        hostname: "git.example.com",
-        adminEmail: "admin@example.com",
-        appIntegration: {
+    for (const forbidden of ["*", "all", "private", "loopback", "Private", "LOOPBACK"]) {
+      expect(
+        GiteaSchema.safeParse({
           enabled: true,
-          webhook: { allowedHosts: ["*"] },
-        },
-      }).success,
-    ).toBe(false);
+          version: "28.4.0",
+          hostname: "git.example.com",
+          adminEmail: "admin@example.com",
+          appIntegration: {
+            enabled: true,
+            webhook: { allowedHosts: [forbidden] },
+          },
+        }).success,
+        forbidden,
+      ).toBe(false);
+    }
   });
 
   it("rejects hostname colliding with app domain, outside Cloudflare zone, or too deep when proxied", async () => {

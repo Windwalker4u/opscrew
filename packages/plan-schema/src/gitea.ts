@@ -63,22 +63,26 @@ const GiteaAdminUserSchema = z
     message: 'must not be "root"; choose a dedicated administrator username such as "gitea-admin"',
   });
 
+/** Gitea webhook `ALLOWED_HOST_LIST` wildcards/keywords forbidden for SSRF safety (case-insensitive). */
+const FORBIDDEN_WEBHOOK_HOSTS = new Set(["*", "all", "private", "loopback"]);
+
 /** Outgoing webhook delivery configuration for app integration. */
 export const GiteaWebhookSchema = z.strictObject({
   /** Path on the app that receives Gitea webhooks, for example `/api/webhooks/gitea`. */
   path: UrlPathSchema.optional(),
   /**
    * Extra hostnames or CIDRs Gitea webhooks may deliver to, in addition to `external` and the
-   * app's own domain. Wildcard `*` is refused for SSRF safety.
+   * app's own domain. Wildcard `*` and Gitea's built-in `all`, `private`, and `loopback` keywords
+   * are refused for SSRF safety.
    */
   allowedHosts: z
     .array(
       z
         .string()
         .min(1)
-        .refine((host) => host.trim() !== "*", {
+        .refine((host) => !FORBIDDEN_WEBHOOK_HOSTS.has(host.trim().toLowerCase()), {
           message:
-            'must not be "*": name specific hostnames or CIDRs instead of allowing webhooks to reach arbitrary internal hosts',
+            'must not be "*", "all", "private", or "loopback": name specific hostnames or CIDRs instead of allowing webhooks to reach arbitrary internal hosts',
         }),
     )
     .default(() => []),

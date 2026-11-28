@@ -897,10 +897,19 @@ export async function addonEnable(
       ...(options.sshEnabled === undefined ? {} : { sshEnabled: options.sshEnabled }),
       ...(options.sshPort === undefined ? {} : { sshPort: options.sshPort }),
       ...(options.planOnly === undefined ? {} : { planOnly: options.planOnly }),
-      ...(options.approvePlanHashes === undefined
+      ...(options.skipOtherAppsCheck === undefined
         ? {}
-        : { approvePlanHashes: options.approvePlanHashes }),
-      ...(options.services?.gitea === undefined ? {} : { services: options.services.gitea }),
+        : { skipOtherAppsCheck: options.skipOtherAppsCheck }),
+      ...(options.services?.gitea === undefined && options.services?.otherApps === undefined
+        ? {}
+        : {
+            services: {
+              ...options.services?.gitea,
+              ...(options.services?.otherApps === undefined
+                ? {}
+                : { otherApps: options.services.otherApps }),
+            },
+          }),
     });
     const status = await addonStatusOf(deps, plan);
     return {
@@ -1004,10 +1013,16 @@ export async function addonDisable(
     const res = await giteaDisable(deps, plan, {
       ...(options.keepData === undefined ? {} : { keepData: options.keepData }),
       ...(options.planOnly === undefined ? {} : { planOnly: options.planOnly }),
-      ...(options.approvePlanHashes === undefined
+      ...(options.services?.gitea === undefined && options.services?.otherApps === undefined
         ? {}
-        : { approvePlanHashes: options.approvePlanHashes }),
-      ...(options.services?.gitea === undefined ? {} : { services: options.services.gitea }),
+        : {
+            services: {
+              ...options.services?.gitea,
+              ...(options.services?.otherApps === undefined
+                ? {}
+                : { otherApps: options.services.otherApps }),
+            },
+          }),
     });
     const status = await addonStatusOf(deps, plan);
     return {

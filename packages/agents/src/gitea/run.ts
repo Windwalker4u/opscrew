@@ -1,10 +1,18 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { applyHostPlan, type HostPlan, hostPlanHash, planGitea } from "@opscrew/connector-ssh-host";
+import {
+  applyHostPlan,
+  GITEA_HOST_PROJECT,
+  giteaHostDir,
+  type HostPlan,
+  hostPlanHash,
+  planGitea,
+} from "@opscrew/connector-ssh-host";
 import type { PolicyResult, RemoteExec } from "@opscrew/contracts";
 import { canonicalJson, exists, OpsCrewError, writeFileAtomic } from "@opscrew/core";
 import {
   edgeProxy,
+  GITEA_BOT_USER,
   type GiteaAppConnectionSpec,
   giteaAppIntegration,
   giteaBootstrapScript,
@@ -17,18 +25,29 @@ import { ADDON_PHASE } from "../addons/settings";
 import { deployUserShell } from "../addons/status";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
-import { ensureGiteaSecrets, formatGiteaEnvFiles, removeGiteaSecrets } from "./secrets";
+import { refusedBeforeChange } from "../previews/host";
+import { type OtherAppsServices, requireNoOtherApps } from "../shares/guard";
+import {
+  ensureGiteaSecrets,
+  formatGiteaEnvFiles,
+  registerGiteaSecrets,
+  removeGiteaSecrets,
+  writeGiteaSecrets,
+} from "./secrets";
 import { type GiteaEnableRequest, giteaSettings, requireGiteaTarget, withGitea } from "./settings";
 
 /** Injectable collaborators for self-hosted Gitea commands (fakes in tests). */
 export interface GiteaServices {
   /** Remote shell on the app's server (default: SSH via `appServerShell`). */
   remote?: RemoteExec;
+  /** Shared-server other-apps inspection collaborator (tests). */
+  otherApps?: OtherAppsServices;
 }
 
 export interface GiteaEnableOptions extends GiteaEnableRequest {
   planOnly?: boolean;
-  approvePlanHashes?: readonly string[];
+  /** `--skip-other-apps-check`: go on when OpsCrew can't check a cloud server for other apps. */
+  skipOtherAppsCheck?: boolean;
   services?: GiteaServices;
 }
 
@@ -36,7 +55,8 @@ export interface GiteaDisableOptions {
   /** Keep Gitea's Docker data volumes (default `true`). `false` requires destroy confirmation. */
   keepData?: boolean;
   planOnly?: boolean;
-  approvePlanHashes?: readonly string[];
+  /** `--skip-other-apps-check`: go on when OpsCrew can't check a cloud server for other apps. */
+  skipOtherAppsCheck?: boolean;
   services?: GiteaServices;
 }
 
@@ -124,7 +144,7 @@ export function describeGiteaStatus(status: GiteaStatus): string {
     `Self-hosted Gitea: on (v${status.version}, ${status.database}, ${status.url})`,
     `  Registration: ${status.disableRegistration ? "disabled (hardened)" : "ENABLED (open sign-ups)"}`,
     `  Git SSH: ${status.sshEnabled ? `enabled on port ${status.sshPort}` : "disabled (HTTPS only)"}`,
-    `  API base URL: ${status.apiUrl} (Authorization: token $GITEA_TOKEN)`,
+    `  API base URL: ${status.apiUrl} (Authorization: token $GITEA_API_TOKEN, bot user ${GITEA_BOT_USER})`,
   ];
   if (status.connection !== undefined) {
     lines.push(
@@ -136,6 +156,29 @@ export function describeGiteaStatus(status: GiteaStatus): string {
     }
   }
   return lines.join("\n");
+}
+
+/** ADR 0035 shared-server guard: refuses running/removing singleton Gitea on a shared server. */
+async function requireExclusiveGiteaServer(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  flag: string,
+  command: string,
+  actionText: string,
+  options: { skipOtherAppsCheck?: boolean; services?: GiteaServices },
+): Promise<void> {
+  const first = plan.target.provider === "own" ? plan.target.shares?.app : undefined;
+  if (first !== undefined) {
+    throw refusedBeforeChange(
+      "PHASE_PRECONDITION",
+      `This app shares the server OpsCrew created for "${first}", and self-hosted Gitea is a server-wide instance owned by "${first}".`,
+      `Manage self-hosted Gitea from "${first}"'s repository, or move this app to its own server with \`opscrew retarget${flag}\`.`,
+    );
+  }
+  await requireNoOtherApps(deps, plan, actionText, command, {
+    ...(options.skipOtherAppsCheck === undefined ? {} : { skip: options.skipOtherAppsCheck }),
+    ...(options.services?.otherApps === undefined ? {} : { services: options.services.otherApps }),
+  });
 }
 
 function buildEnableCommand(flag: string, gitea: GiteaSettings): string {
@@ -164,6 +207,14 @@ export async function giteaEnable(
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   const command = `opscrew addon enable gitea${flag}`;
   requireGiteaTarget(plan, command);
+  await requireExclusiveGiteaServer(
+    deps,
+    plan,
+    flag,
+    command,
+    "running self-hosted Gitea on the server",
+    options,
+  );
 
   const settings = giteaSettings(plan, options);
   const after = withGitea(plan, settings);
@@ -196,6 +247,7 @@ export async function giteaEnable(
       proxyFiles,
       bootstrapScript,
       usePostgres: settings.database === "postgres",
+      appIntegrationEnabled: settings.appIntegration.enabled,
       hostname: settings.hostname,
       version: settings.version,
     },
@@ -249,6 +301,27 @@ export async function giteaEnable(
     verifyLogin: async () => true,
   });
 
+  // Capture the newly bootstrapped non-admin bot token from the server into 0600 local
+  // gitea_secrets.json (included in `opscrew secrets backup`) and register it with the redactor.
+  if (settings.appIntegration.enabled) {
+    const tokenFile = `${giteaHostDir(runAs)}/.app-token`;
+    const readRes = await remote
+      .run(`if [ -s '${tokenFile}' ]; then cat '${tokenFile}'; fi`, { timeoutMs: 30_000 })
+      .catch(() => ({ exitCode: 1, stdout: "", stderr: "" }));
+    const captured = readRes.exitCode === 0 ? readRes.stdout.trim() : "";
+    if (captured.length >= 16 && !/\s/.test(captured)) {
+      const updated = registerGiteaSecrets(deps.redactor, { ...secrets, appApiToken: captured });
+      await writeGiteaSecrets(deps.paths, updated);
+    }
+    deps.reporter.info(
+      [
+        `Gitea app integration secrets are saved locally (mode 0600) in ${deps.paths.files.giteaSecrets}.`,
+        `OpsCrew does not automatically inject Gitea variables into your running app or create webhooks in Gitea.`,
+        `To connect your app, wire ${connection.envVars.url} (${connection.url}), ${connection.envVars.apiUrl} (${connection.apiUrl}), ${connection.envVars.token}, and ${connection.envVars.webhookSecret} via \`opscrew values set${flag}\` (or your app's .env), and configure the webhook in Gitea using the HMAC secret stored in ${deps.paths.files.giteaSecrets}.`,
+      ].join("\n"),
+    );
+  }
+
   await writeArtifact("plan", deps.paths.files.plan, after);
   await deps.audit.append({
     kind: "remote-exec",
@@ -285,6 +358,14 @@ export async function giteaDisable(
   const keepData = options.keepData !== false;
   const command = `opscrew addon disable gitea${flag}${keepData ? "" : " --delete-data"}`;
   requireGiteaTarget(plan, command);
+  await requireExclusiveGiteaServer(
+    deps,
+    plan,
+    flag,
+    command,
+    "removing self-hosted Gitea on the server",
+    options,
+  );
 
   const proxy = edgeProxy(plan);
   const runAs: "root" | "login" = plan.target.provider === "own" ? "root" : "login";
@@ -307,6 +388,8 @@ export async function giteaDisable(
     };
   }
 
+  // Constitution I: destructive teardown confirms by resource name (hostname or opscrew-gitea).
+  const confirmResource = plan.gitea?.hostname ?? GITEA_HOST_PROJECT;
   const approval = await deps.approvals.request({
     kind: "host-apply",
     planHash: hash,
@@ -315,10 +398,11 @@ export async function giteaDisable(
       : `Destroy self-hosted Gitea containers, proxy route, AND all repositories/database volumes`,
     details: [
       `App: ${plan.app.name}`,
+      `Resource: ${confirmResource}`,
       `Data volumes: ${keepData ? "kept on server" : "PERMANENTLY DELETED"}`,
       `Host plan SHA-256: ${hash}`,
     ].join("\n"),
-    ...(!keepData ? { allowDestroy: true, confirmPhrase: plan.app.name } : {}),
+    ...(!keepData ? { allowDestroy: true, confirmPhrase: confirmResource } : {}),
   });
   if (!approval.approved) {
     throw new OpsCrewError(

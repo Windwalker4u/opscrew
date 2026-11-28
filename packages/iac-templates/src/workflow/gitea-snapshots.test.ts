@@ -54,21 +54,24 @@ describe("self-hosted Gitea snapshots & restore drills", () => {
     ).join("\n");
     expect(drillScript).toContain(`${plan.app.name}-drill_gitea_data:/var/lib/gitea`);
     expect(drillScript).toContain("--network none");
+    expect(drillScript).toContain("/api/healthz");
     expect(drillScript).not.toContain(`docker compose -p ${GITEA_PROJECT} stop`);
   });
 
-  it("includes both gitea tar and gitea-db pg_dump in PostgreSQL mode with isolated drill verification", async () => {
+  it("includes both gitea tar and consistent stop-only gitea-db pg_dump in PostgreSQL mode with throwaway drill health probe", async () => {
     const plan = await planWithGitea("postgres");
     const parts = snapshotParts(plan);
     const giteaDb = parts.find((p) => p.name === "gitea-db");
-    expect(giteaDb).toBeDefined();
-    expect(giteaDb?.kind).toBe("gitea-db");
-    expect(giteaDb?.file).toBe("gitea-db.dump");
-    expect(giteaDb?.online).toBe(true);
+    if (giteaDb === undefined) throw new Error("expected gitea-db snapshot part");
+    expect(giteaDb.kind).toBe("gitea-db");
+    expect(giteaDb.file).toBe("gitea-db.dump");
+    expect(giteaDb.online).toBe(false);
+    expect(partRestore(giteaDb).stop).toBe(true);
 
     const script = snapshotFunctions(plan, "app", "/srv/apps/app").join("\n");
     expect(script).toContain("pg_dump -U gitea -Fc gitea");
     expect(script).toContain("pg_restore -U gitea -d gitea");
+    expect(script).toContain(`docker compose -p ${GITEA_PROJECT} stop -t 120 gitea`);
 
     const drill = drillPlan(plan, { id: "20261128T090000Z", parts: ["gitea", "gitea-db"] });
     expect(drill.app.name).toBe(`${plan.app.name}-drill`);
@@ -78,6 +81,9 @@ describe("self-hosted Gitea snapshots & restore drills", () => {
       "/srv/apps/app",
       drillProject(plan, "20261128T090000Z"),
     ).join("\n");
-    expect(drillScript).toContain("pg_restore --list - > /dev/null");
+    expect(drillScript).toContain("docker network create --internal");
+    expect(drillScript).toContain("pg_restore -U gitea -d gitea");
+    expect(drillScript).toContain("/api/healthz");
+    expect(drillScript).not.toContain(`docker compose -p ${GITEA_PROJECT} stop`);
   });
 });

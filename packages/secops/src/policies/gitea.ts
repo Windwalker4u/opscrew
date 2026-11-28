@@ -19,11 +19,16 @@ const SECRET_KEYS = [
   "GITEA__database__PASSWD",
   "POSTGRES_PASSWORD",
   "GITEA_ADMIN_PASSWORD",
+  "GITEA_BOT_PASSWORD",
+  "GITEA_API_TOKEN",
   "GITEA_TOKEN",
   "GITEA_WEBHOOK_SECRET",
 ];
 
 const RESERVED_SSH_PORTS = new Set([22, 80, 443]);
+
+/** Gitea built-in webhook host keywords that allow SSRF to internal/loopback services. */
+const FORBIDDEN_WEBHOOK_HOSTS = new Set(["*", "all", "private", "loopback"]);
 
 function policy(
   policyId: string,
@@ -193,13 +198,16 @@ export function evaluateGiteaPolicies(
     ),
   );
 
-  // 6. Webhook allowed host list does not allow wildcard * (SSRF guard)
+  // 6. Webhook allowed host list does not allow '*', 'all', 'private', or 'loopback' (SSRF guard)
   const allowList = (giteaEnv.GITEA__webhook__ALLOWED_HOST_LIST ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  const forbiddenHosts = allowList.filter((entry) =>
+    FORBIDDEN_WEBHOOK_HOSTS.has(entry.toLowerCase()),
+  );
   const skipTls = giteaEnv.GITEA__webhook__SKIP_TLS_VERIFY === "true";
-  const webhookSafe = allowList.length > 0 && !allowList.includes("*") && !skipTls;
+  const webhookSafe = allowList.length > 0 && forbiddenHosts.length === 0 && !skipTls;
   results.push(
     policy(
       "gitea-webhook-host-restricted",
@@ -208,7 +216,7 @@ export function evaluateGiteaPolicies(
       webhookSafe,
       webhookSafe
         ? `Gitea webhooks verify TLS and allow only: ${allowList.join(", ")}.`
-        : "Gitea webhooks must set a non-empty GITEA__webhook__ALLOWED_HOST_LIST without '*' and keep SKIP_TLS_VERIFY=false.",
+        : "Gitea webhooks must set a non-empty GITEA__webhook__ALLOWED_HOST_LIST without '*', 'all', 'private', or 'loopback' and keep SKIP_TLS_VERIFY=false.",
     ),
   );
 

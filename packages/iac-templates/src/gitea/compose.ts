@@ -40,9 +40,13 @@ export const GITEA_VOLUMES = {
 /** Private RFC1918 + loopback ranges trusted for reverse proxy headers from OpsCrew's edge. */
 const TRUSTED_PROXY_CIDRS = "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
 
+/** Gitea webhook host keywords forbidden for SSRF protection (case-insensitive). */
+const FORBIDDEN_WEBHOOK_HOSTS = new Set(["*", "all", "private", "loopback"]);
+
 /**
- * Computes `GITEA__webhook__ALLOWED_HOST_LIST` safely (never `*`): starts with `external`, adds
- * the app's own domain when set, and appends any explicit `appIntegration.webhook.allowedHosts`.
+ * Computes `GITEA__webhook__ALLOWED_HOST_LIST` safely (never `*`, `all`, `private`, or `loopback`):
+ * starts with `external`, adds the app's own domain when set, and appends any explicit
+ * `appIntegration.webhook.allowedHosts`.
  */
 export function giteaWebhookAllowedHostList(plan: DeployPlan, gitea: GiteaSettings): string {
   const hosts = new Set<string>(["external"]);
@@ -51,7 +55,7 @@ export function giteaWebhookAllowedHostList(plan: DeployPlan, gitea: GiteaSettin
   }
   for (const host of gitea.appIntegration.webhook?.allowedHosts ?? []) {
     const trimmed = host.trim();
-    if (trimmed !== "" && trimmed !== "*") {
+    if (trimmed !== "" && !FORBIDDEN_WEBHOOK_HOSTS.has(trimmed.toLowerCase())) {
       hosts.add(trimmed);
     }
   }
@@ -77,7 +81,9 @@ export function renderGiteaCompose(plan: DeployPlan, gitea: GiteaSettings): stri
     GITEA__security__INSTALL_LOCK: "true",
     GITEA__security__REVERSE_PROXY_LIMIT: "1",
     GITEA__security__REVERSE_PROXY_TRUSTED_PROXIES: TRUSTED_PROXY_CIDRS,
+    GITEA__session__COOKIE_SECURE: "true",
     GITEA__service__DISABLE_REGISTRATION: gitea.disableRegistration ? "true" : "false",
+    GITEA__openid__ENABLE_OPENID_SIGNUP: gitea.disableRegistration ? "false" : "true",
     GITEA__server__ROOT_URL: `https://${gitea.hostname}/`,
     GITEA__server__DOMAIN: gitea.hostname,
     GITEA__server__PROTOCOL: "http",
@@ -87,6 +93,7 @@ export function renderGiteaCompose(plan: DeployPlan, gitea: GiteaSettings): stri
     GITEA__server__START_SSH_SERVER: gitea.ssh.enabled ? "true" : "false",
     ...(gitea.ssh.enabled
       ? {
+          GITEA__server__SSH_DOMAIN: gitea.hostname,
           GITEA__server__SSH_LISTEN_PORT: String(GITEA_SSH_CONTAINER_PORT),
           GITEA__server__SSH_PORT: String(gitea.ssh.port),
         }

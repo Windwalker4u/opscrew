@@ -203,12 +203,16 @@ async function runChange(
       );
       requireServer(plan, `\`opscrew addon ${sub} ${kind}\``, ON_HOSTING_INSTEAD.addons);
       const app = plan.app.name;
+      const giteaResource = plan.gitea?.hostname ?? "opscrew-gitea";
+      const confirmTarget = kind === "gitea" ? giteaResource : app;
       const confirm = flags.confirm?.trim();
       checkConfirmName(
         confirm,
-        app,
-        "the app's name",
-        `To delete Beszel's history in a script, run \`opscrew addon disable beszel${flag} --approve <hash> … --confirm ${app}\`.`,
+        confirmTarget,
+        kind === "gitea" ? "Gitea's hostname" : "the app's name",
+        kind === "gitea"
+          ? `To delete Gitea's data in a script, run \`opscrew addon disable gitea${flag} --delete-data --approve <hash> --confirm ${giteaResource}\`.`
+          : `To delete Beszel's history in a script, run \`opscrew addon disable beszel${flag} --approve <hash> … --confirm ${app}\`.`,
       );
       const deps = createPhaseDeps(ctx, {
         ai: false,
@@ -220,7 +224,10 @@ async function runChange(
               wrapApprovals: (base, clock) =>
                 new FlagConfirmation(base, {
                   kinds: ["host-apply"],
-                  what: "deleting Beszel's history",
+                  what:
+                    kind === "gitea"
+                      ? "deleting self-hosted Gitea's repositories and database"
+                      : "deleting Beszel's history",
                   names: confirm === undefined ? [] : [confirm],
                   hashes,
                   interactive: ctx.isInteractive,

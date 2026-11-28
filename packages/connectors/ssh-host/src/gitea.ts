@@ -30,6 +30,7 @@ export interface GiteaEnablePlanInput {
   proxyFiles: readonly { filename: string; content: string }[];
   bootstrapScript: string;
   usePostgres: boolean;
+  appIntegrationEnabled?: boolean;
   hostname: string;
   version: string;
   rewrite?: boolean;
@@ -78,6 +79,7 @@ export function planGitea(options: PlanGiteaOptions): HostPlan {
       scope: "shared",
       params: {
         runAs,
+        owner: app,
         remove: true,
         keepData,
         proxy,
@@ -124,10 +126,12 @@ export function planGitea(options: PlanGiteaOptions): HostPlan {
     scope: "shared",
     params: {
       runAs,
+      owner: app,
       hostname: input.hostname,
       version: input.version,
       proxy,
       usePostgres: input.usePostgres,
+      appIntegrationEnabled: input.appIntegrationEnabled !== false,
       composeYaml: input.composeYaml,
       composeSha256: sha256Hex(input.composeYaml),
       bootstrapScript: input.bootstrapScript,
@@ -157,6 +161,23 @@ function reloadEdgeCommand(proxy: GiteaEdgeProxy): string {
 }
 
 /**
+ * Shell guard that refuses to modify or remove a server-wide Gitea installation owned by another
+ * OpsCrew app (`$DIR/.owner` mismatch). Runs before any check decision or mutation.
+ */
+function ownerGuardLines(dir: string, owner: string): string[] {
+  return [
+    `OWNER_FILE=${shellQuote(`${dir}/.owner`)}`,
+    'if [ -f "$OWNER_FILE" ]; then',
+    '  CUR_OWNER="$(cat "$OWNER_FILE")"',
+    `  if [ "$CUR_OWNER" != ${shellQuote(owner)} ]; then`,
+    `    echo "Self-hosted Gitea on this server is owned by app \\"$CUR_OWNER\\", not ${shellQuote(owner)}. Refusing to modify or remove another app's Gitea instance." >&2`,
+    "    exit 1",
+    "  fi",
+    "fi",
+  ];
+}
+
+/**
  * Generates check, apply, and verify shell scripts for the `"gitea"` host step.
  * Secrets arrive strictly on stdin as base64-encoded lines (`giteaEnv`, optional
  * `giteaPostgresEnv`, `giteaBootstrapEnv`) and are written atomically with mode `0600`.
@@ -170,13 +191,20 @@ export function giteaStepScripts(step: HostStep): {
   secrets?: { names: readonly SecretName[]; required: boolean };
 } {
   const runAs: "root" | "login" = step.params.runAs === "login" ? "login" : "root";
+  const owner = AppNameSchema.parse(step.params.owner);
   const dir = giteaHostDir(runAs);
   const proxy = GiteaEdgeProxySchema.parse(step.params.proxy ?? "caddy");
   const remove = step.params.remove === true;
+  const ownerGuard = ownerGuardLines(dir, owner);
 
   if (remove) {
     const keepData = step.params.keepData !== false;
     const downFlags = keepData ? "" : " -v";
+    const dataVolumes = [
+      `${GITEA_HOST_PROJECT}_gitea_data`,
+      `${GITEA_HOST_PROJECT}_gitea_config`,
+      `${GITEA_HOST_PROJECT}_gitea_db`,
+    ];
     return {
       doing: keepData
         ? "removing self-hosted Gitea (keeping data volumes)"
@@ -184,7 +212,12 @@ export function giteaStepScripts(step: HostStep): {
       timeoutMs: 180_000,
       check: [
         "set -eu",
-        `if [ -d ${shellQuote(dir)} ] || [ -n "$(docker compose -p ${GITEA_HOST_PROJECT} ps -aq 2>/dev/null || true)" ] || ls ${EDGE_DIR}/sites/opscrew-gitea.* >/dev/null 2>&1; then`,
+        ...ownerGuard,
+        `if [ -d ${shellQuote(dir)} ] || [ -n "$(docker compose -p ${GITEA_HOST_PROJECT} ps -aq 2>/dev/null || true)" ] || ls ${EDGE_DIR}/sites/opscrew-gitea.* >/dev/null 2>&1${
+          keepData
+            ? ""
+            : ` || docker volume inspect ${dataVolumes[0]} >/dev/null 2>&1 || docker volume inspect ${dataVolumes[1]} >/dev/null 2>&1 || docker volume inspect ${dataVolumes[2]} >/dev/null 2>&1`
+        }; then`,
         "  echo state=change",
         "else",
         "  echo state=in-place",
@@ -192,11 +225,15 @@ export function giteaStepScripts(step: HostStep): {
       ].join("\n"),
       apply: [
         "set -eu",
+        ...ownerGuard,
         `if [ -f ${shellQuote(`${dir}/compose.yaml`)} ]; then`,
         `  docker compose -p ${GITEA_HOST_PROJECT} -f ${shellQuote(`${dir}/compose.yaml`)} down${downFlags} >/dev/null 2>&1 || true`,
         "else",
         `  docker compose -p ${GITEA_HOST_PROJECT} down${downFlags} >/dev/null 2>&1 || true`,
         "fi",
+        ...(keepData
+          ? []
+          : [`docker volume rm -f ${dataVolumes.join(" ")} >/dev/null 2>&1 || true`]),
         `rm -f ${EDGE_DIR}/sites/opscrew-gitea.caddy ${EDGE_DIR}/sites/opscrew-gitea.conf ${EDGE_DIR}/sites/opscrew-gitea.vhost ${EDGE_DIR}/sites/opscrew-gitea.map ${EDGE_DIR}/sites/opscrew-gitea.vhconf`,
         reloadEdgeCommand(proxy),
         `rm -rf ${shellQuote(dir)}`,
@@ -205,6 +242,11 @@ export function giteaStepScripts(step: HostStep): {
         "set -eu",
         `[ ! -d ${shellQuote(dir)} ] || { echo "Gitea directory still present" >&2; exit 1; }`,
         `[ -z "$(docker compose -p ${GITEA_HOST_PROJECT} ps -aq 2>/dev/null || true)" ] || { echo "Gitea containers still running" >&2; exit 1; }`,
+        ...(keepData
+          ? []
+          : [
+              `for _v in ${dataVolumes.join(" ")}; do if docker volume inspect "$_v" >/dev/null 2>&1; then echo "Gitea data volume $_v still exists" >&2; exit 1; fi; done`,
+            ]),
       ].join("\n"),
     };
   }
@@ -213,6 +255,7 @@ export function giteaStepScripts(step: HostStep): {
   const composeSha = String(step.params.composeSha256 ?? "");
   const bootstrapScript = String(step.params.bootstrapScript ?? "");
   const usePostgres = step.params.usePostgres === true;
+  const appIntegrationEnabled = step.params.appIntegrationEnabled !== false;
   const rewrite = step.params.rewrite === true;
 
   const proxyEntries = Object.entries(step.params)
@@ -229,9 +272,13 @@ export function giteaStepScripts(step: HostStep): {
 
   const checkLines = [
     "set -eu",
+    ...ownerGuard,
     ...(rewrite ? ["echo state=change", "exit 0"] : []),
     `COMPOSE=${shellQuote(`${dir}/compose.yaml`)}`,
-    `if [ ! -f "$COMPOSE" ] || [ ! -f ${shellQuote(`${dir}/gitea.env`)} ]; then echo state=change; exit 0; fi`,
+    `if [ ! -f "$COMPOSE" ] || [ ! -f ${shellQuote(`${dir}/gitea.env`)} ] || [ ! -f ${shellQuote(`${dir}/.owner`)} ] || [ ! -f ${shellQuote(`${dir}/.bootstrapped`)} ]; then echo state=change; exit 0; fi`,
+    ...(appIntegrationEnabled
+      ? [`if [ ! -s ${shellQuote(`${dir}/.app-token`)} ]; then echo state=change; exit 0; fi`]
+      : []),
     `CUR_SHA="$(sha256sum "$COMPOSE" | awk '{print $1}')"`,
     `if [ "$CUR_SHA" != ${shellQuote(composeSha)} ]; then echo state=change; exit 0; fi`,
     ...proxyEntries.map((entry) => {
@@ -254,6 +301,7 @@ export function giteaStepScripts(step: HostStep): {
   const applyLines = [
     "set -eu",
     "umask 077",
+    ...ownerGuard,
     "IFS= read -r GITEA_ENV_B64 || true",
     ...(usePostgres ? ["IFS= read -r GITEA_PG_ENV_B64 || true"] : []),
     "IFS= read -r GITEA_BOOT_B64 || true",
@@ -267,6 +315,8 @@ export function giteaStepScripts(step: HostStep): {
     `DIR=${shellQuote(dir)}`,
     'mkdir -p "$DIR"',
     'chmod 700 "$DIR"',
+    `printf '%s\\n' ${shellQuote(owner)} > "$DIR/.owner.tmp"`,
+    'chmod 600 "$DIR/.owner.tmp" && mv "$DIR/.owner.tmp" "$DIR/.owner"',
     `printf '%s' ${shellQuote(b64Compose)} | base64 -d > "$DIR/compose.yaml.tmp"`,
     'chmod 644 "$DIR/compose.yaml.tmp" && mv "$DIR/compose.yaml.tmp" "$DIR/compose.yaml"',
     'printf \'%s\' "$GITEA_ENV_B64" | base64 -d > "$DIR/gitea.env.tmp"',
@@ -288,6 +338,7 @@ export function giteaStepScripts(step: HostStep): {
     }),
     'cd "$DIR"',
     `docker compose -p ${GITEA_HOST_PROJECT} -f "$DIR/compose.yaml" up -d --wait >/dev/null`,
+    'rm -f "$DIR/.bootstrapped"',
     `printf '%s' ${shellQuote(b64Bootstrap)} | base64 -d > "$DIR/bootstrap.sh"`,
     'chmod 700 "$DIR/bootstrap.sh"',
     'printf \'%s\' "$GITEA_BOOT_B64" | base64 -d | sh "$DIR/bootstrap.sh"',
@@ -298,10 +349,20 @@ export function giteaStepScripts(step: HostStep): {
   const verifyLines = [
     "set -eu",
     `DIR=${shellQuote(dir)}`,
+    '[ -f "$DIR/.owner" ] || { echo "Missing Gitea owner marker" >&2; exit 1; }',
+    `[ "$(cat "$DIR/.owner")" = ${shellQuote(owner)} ] || { echo "Gitea owner marker mismatch" >&2; exit 1; }`,
+    '[ "$(stat -c %a "$DIR/.owner")" = "600" ] || { echo "Gitea owner marker must be mode 600" >&2; exit 1; }',
     '[ -f "$DIR/compose.yaml" ] || { echo "Missing Gitea compose.yaml" >&2; exit 1; }',
     '[ -f "$DIR/gitea.env" ] || { echo "Missing Gitea secret env file" >&2; exit 1; }',
     'MODE="$(stat -c %a "$DIR/gitea.env")"',
     '[ "$MODE" = "600" ] || { echo "Gitea secret env file must be mode 600" >&2; exit 1; }',
+    '[ -f "$DIR/.bootstrapped" ] || { echo "Gitea bootstrap did not complete" >&2; exit 1; }',
+    ...(appIntegrationEnabled
+      ? [
+          '[ -s "$DIR/.app-token" ] || { echo "Missing Gitea app token file" >&2; exit 1; }',
+          '[ "$(stat -c %a "$DIR/.app-token")" = "600" ] || { echo "Gitea app token file must be mode 600" >&2; exit 1; }',
+        ]
+      : []),
     ...proxyEntries.map(
       (entry) =>
         `[ -f ${shellQuote(`${EDGE_DIR}/sites/${entry.filename}`)} ] || { echo "Missing Gitea edge site ${entry.filename}" >&2; exit 1; }`,

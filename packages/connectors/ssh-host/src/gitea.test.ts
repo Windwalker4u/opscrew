@@ -110,12 +110,21 @@ describe("planGitea & applyHostPlan(gitea)", () => {
     });
 
     expect(result.applied).toEqual(["gitea"]);
+    const checkCall = calls.find(
+      (c) => c.command.includes("echo state=change") && c.command.includes("echo state=in-place"),
+    );
+    expect(checkCall?.command).toContain(".owner");
+    expect(checkCall?.command).toContain(".bootstrapped");
+    expect(checkCall?.command).toContain(".app-token");
+
     const applyCall = calls.find((c) => c.stdin !== undefined);
     expect(applyCall).toBeDefined();
     expect(applyCall?.command).not.toContain("syntheticsecretkeyvalue0123456789");
     expect(applyCall?.command).not.toContain("syntheticpgpass0123456789");
     expect(applyCall?.command).not.toContain("syntheticadminpass0123456789");
     expect(applyCall?.command).toContain("chmod 600");
+    expect(applyCall?.command).toContain(".owner.tmp");
+    expect(applyCall?.command).toContain('rm -f "$DIR/.bootstrapped"');
     expect(applyCall?.command).toContain("nginx -t && nginx -s reload");
     const stdinLines = (applyCall?.stdin ?? "").trim().split("\n");
     expect(stdinLines).toHaveLength(3);
@@ -124,7 +133,7 @@ describe("planGitea & applyHostPlan(gitea)", () => {
     expect(Buffer.from(stdinLines[2] ?? "", "base64").toString("utf8")).toBe(giteaBootstrapEnv);
   });
 
-  it("keeps volumes on disable by default and adds -v only when keepData is false", () => {
+  it("enforces owner lock on disable, keeps volumes by default, and verifies volumes are gone when keepData is false", () => {
     const keepPlan = planGitea({
       app: "shop",
       runAs: "login",
@@ -133,8 +142,11 @@ describe("planGitea & applyHostPlan(gitea)", () => {
     const keepStep = keepPlan.steps[0];
     if (!keepStep) throw new Error("expected step");
     const keepScripts = giteaStepScripts(keepStep);
+    expect(keepScripts.check).toContain(".owner");
+    expect(keepScripts.apply).toContain(".owner");
     expect(keepScripts.apply).toContain("down >/dev/null");
     expect(keepScripts.apply).not.toContain("down -v");
+    expect(keepScripts.verify).not.toContain("docker volume inspect");
 
     const dropPlan = planGitea({
       app: "shop",
@@ -145,5 +157,7 @@ describe("planGitea & applyHostPlan(gitea)", () => {
     if (!dropStep) throw new Error("expected step");
     const dropScripts = giteaStepScripts(dropStep);
     expect(dropScripts.apply).toContain("down -v");
+    expect(dropScripts.apply).toContain("docker volume rm -f");
+    expect(dropScripts.verify).toContain("docker volume inspect");
   });
 });

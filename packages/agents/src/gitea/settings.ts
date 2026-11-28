@@ -86,6 +86,20 @@ export function giteaSettings(plan: DeployPlan, request: GiteaEnableRequest): Gi
     );
   }
 
+  if (
+    existing?.enabled === true &&
+    request.database !== undefined &&
+    request.database !== existing.database
+  ) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `Self-hosted Gitea is already configured with \`${existing.database}\`; switching to \`${request.database}\` in place would boot an empty database without migrating repositories or metadata. Nothing was changed.`,
+      {
+        hint: "Back up your Gitea data first (`opscrew snapshot take`), disable Gitea with `--delete-data`, and re-enable it with the desired `--database`.",
+      },
+    );
+  }
+
   const webhookPath = request.webhookPath ?? existing?.appIntegration.webhook?.path;
   const webhookAllowedHosts =
     request.webhookAllowedHosts !== undefined
@@ -94,7 +108,7 @@ export function giteaSettings(plan: DeployPlan, request: GiteaEnableRequest): Gi
 
   return {
     enabled: true,
-    version: GITEA_VERSION,
+    version: existing?.version ?? GITEA_VERSION,
     hostname,
     database: request.database ?? existing?.database ?? "sqlite",
     adminUser: request.adminUser ?? existing?.adminUser ?? "gitea-admin",

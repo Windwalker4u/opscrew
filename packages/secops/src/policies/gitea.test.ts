@@ -91,4 +91,17 @@ describe("evaluateGiteaPolicies", () => {
     expect(failedIds).toContain("gitea-proxy-hardened");
     expect(blockingPolicyFailures(results).length).toBeGreaterThanOrEqual(7);
   });
+
+  it("blocks Gitea built-in SSRF webhook keywords (all, private, loopback) case-insensitively", async () => {
+    const plan = await planWithGitea();
+    for (const keyword of ["all", "private", "loopback", "Private", "ALL"]) {
+      const composeYaml = HARDENED_COMPOSE.replace(
+        "external,app.example.com",
+        `external,${keyword}`,
+      );
+      const results = evaluateGiteaPolicies(plan, { composeYaml, proxyFiles: HARDENED_PROXY });
+      const webhookPolicy = results.find((r) => r.policyId === "gitea-webhook-host-restricted");
+      expect(webhookPolicy?.passed, keyword).toBe(false);
+    }
+  });
 });

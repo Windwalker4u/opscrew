@@ -66,7 +66,9 @@ describe("renderGiteaCompose", () => {
 
     const env = giteaSvc.environment as Record<string, string>;
     expect(env.GITEA__security__INSTALL_LOCK).toBe("true");
+    expect(env.GITEA__session__COOKIE_SECURE).toBe("true");
     expect(env.GITEA__service__DISABLE_REGISTRATION).toBe("true");
+    expect(env.GITEA__openid__ENABLE_OPENID_SIGNUP).toBe("false");
     expect(env.GITEA__server__ROOT_URL).toBe("https://git.example.com/");
     expect(env.GITEA__server__DISABLE_SSH).toBe("true");
     expect(env.GITEA__server__START_SSH_SERVER).toBe("false");
@@ -122,6 +124,7 @@ describe("renderGiteaCompose", () => {
     expect(env.GITEA__database__DB_TYPE).toBe("postgres");
     expect(env.GITEA__database__HOST).toBe("gitea-db:5432");
     expect(env.GITEA__server__START_SSH_SERVER).toBe("true");
+    expect(env.GITEA__server__SSH_DOMAIN).toBe("git.example.com");
     expect(env.GITEA__server__SSH_PORT).toBe("2222");
     expect(giteaWebhookAllowedHostList(plan, gitea)).toContain("hooks.example.com");
   });
@@ -178,8 +181,11 @@ describe("giteaAppIntegration & giteaBootstrapScript", () => {
     const script = giteaBootstrapScript(gitea);
     expect(script).toContain("umask 077");
     expect(script).toContain("gitea admin user create");
+    expect(script).toContain("IFS= read -r P");
+    expect(script).not.toMatch(/exec\b[^\n]*--env-file/);
+    expect(script).toContain("opscrew-bot");
     expect(script).toContain("gitea admin user generate-access-token");
     expect(script).toContain("read:repository,read:issue,read:organization,read:user");
-    expect(script).toContain('--env-file "$BOOT_FILE"');
+    expect(script).toContain("touch .bootstrapped && chmod 600 .bootstrapped");
   });
 });

@@ -13,6 +13,11 @@ import { z } from "zod";
 const GiteaSecretsSchema = z.strictObject({
   /** Initial administrator password (letters, digits, `-`, `_`). */
   adminPassword: z.string().regex(/^[A-Za-z0-9_-]{24,128}$/),
+  /** Dedicated non-admin bot user (`opscrew-bot`) password (letters, digits, `-`, `_`). */
+  botPassword: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{24,128}$/)
+    .optional(),
   /** `GITEA__security__SECRET_KEY`: 64 lower-case hex digits (32 random bytes). */
   secretKey: z.string().regex(/^[0-9a-f]{64}$/),
   /** `GITEA__security__INTERNAL_TOKEN`: random base64url secret (64 bytes). */
@@ -23,6 +28,8 @@ const GiteaSecretsSchema = z.strictObject({
   lfsJwtSecret: z.string().regex(/^[A-Za-z0-9_-]{32,128}$/),
   /** Shared HMAC-SHA256 webhook signing secret (`GITEA_WEBHOOK_SECRET`): 64 hex digits. */
   webhookSecret: z.string().regex(/^[0-9a-f]{64}$/),
+  /** Dedicated non-admin bot API token (`GITEA_API_TOKEN`) captured after bootstrap. */
+  appApiToken: z.string().min(16).max(256).optional(),
   /** Dedicated PostgreSQL password when `database: "postgres"`: 64 hex digits. */
   postgresPassword: z
     .string()
@@ -49,11 +56,17 @@ export function registerGiteaSecrets(
   secrets: GiteaSecrets,
 ): GiteaSecrets {
   redactor.addLiteral(secrets.adminPassword, "gitea-admin-password");
+  if (secrets.botPassword !== undefined) {
+    redactor.addLiteral(secrets.botPassword, "gitea-bot-password");
+  }
   redactor.addLiteral(secrets.secretKey, "gitea-secret-key");
   redactor.addLiteral(secrets.internalToken, "gitea-internal-token");
   redactor.addLiteral(secrets.jwtSecret, "gitea-jwt-secret");
   redactor.addLiteral(secrets.lfsJwtSecret, "gitea-lfs-jwt-secret");
   redactor.addLiteral(secrets.webhookSecret, "gitea-webhook-secret");
+  if (secrets.appApiToken !== undefined) {
+    redactor.addLiteral(secrets.appApiToken, "gitea-api-token");
+  }
   if (secrets.postgresPassword !== undefined) {
     redactor.addLiteral(secrets.postgresPassword, "gitea-postgres-password");
   }
@@ -102,10 +115,13 @@ export async function ensureGiteaSecrets(
 ): Promise<GiteaSecrets> {
   const existing = await readGiteaSecrets(deps);
   if (existing !== undefined) {
-    if (usePostgres && existing.postgresPassword === undefined) {
+    const needsBot = existing.botPassword === undefined;
+    const needsPg = usePostgres && existing.postgresPassword === undefined;
+    if (needsBot || needsPg) {
       const updated: GiteaSecrets = {
         ...existing,
-        postgresPassword: randomBytes(32).toString("hex"),
+        ...(needsBot ? { botPassword: randomBytes(24).toString("base64url") } : {}),
+        ...(needsPg ? { postgresPassword: randomBytes(32).toString("hex") } : {}),
       };
       registerGiteaSecrets(deps.redactor, updated);
       await writeGiteaSecrets(deps.paths, updated);
@@ -115,6 +131,7 @@ export async function ensureGiteaSecrets(
   }
   const fresh: GiteaSecrets = {
     adminPassword: randomBytes(24).toString("base64url"),
+    botPassword: randomBytes(24).toString("base64url"),
     secretKey: randomBytes(32).toString("hex"),
     internalToken: randomBytes(64).toString("base64url"),
     jwtSecret: randomBytes(32).toString("base64url"),
@@ -158,9 +175,13 @@ export function formatGiteaEnvFiles(
           `POSTGRES_PASSWORD=${secrets.postgresPassword}`,
         ]
       : undefined;
+  const bootstrapLines = [
+    `GITEA_ADMIN_PASSWORD=${secrets.adminPassword}`,
+    ...(secrets.botPassword !== undefined ? [`GITEA_BOT_PASSWORD=${secrets.botPassword}`] : []),
+  ];
   return {
     giteaEnv: `${giteaLines.join("\n")}\n`,
     ...(postgresLines === undefined ? {} : { giteaPostgresEnv: `${postgresLines.join("\n")}\n` }),
-    giteaBootstrapEnv: `GITEA_ADMIN_PASSWORD=${secrets.adminPassword}\n`,
+    giteaBootstrapEnv: `${bootstrapLines.join("\n")}\n`,
   };
 }

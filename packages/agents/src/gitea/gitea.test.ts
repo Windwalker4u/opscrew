@@ -15,6 +15,7 @@ import {
   describeGiteaStatus,
   giteaDisable,
   giteaEnable,
+  giteaSettings,
   giteaStatusOf,
   readGiteaSecrets,
 } from "./index";
@@ -64,6 +65,9 @@ async function makeWorkspace(approve = true): Promise<{
       if (command.includes("echo state=change") && command.includes("echo state=in-place")) {
         return { exitCode: 0, stdout: "state=change\n", stderr: "" };
       }
+      if (command.includes("cat ") && command.includes(".app-token")) {
+        return { exitCode: 0, stdout: "syntheticbottoken0123456789abcdef\n", stderr: "" };
+      }
       return { exitCode: 0, stdout: "ok\n", stderr: "" };
     },
   };
@@ -104,6 +108,7 @@ describe("giteaEnable / giteaDisable / giteaStatusOf", () => {
       hostname: "git.example.com",
       adminEmail: "admin@example.com",
       planOnly: true,
+      skipOtherAppsCheck: true,
       services: { remote },
     });
 
@@ -125,6 +130,7 @@ describe("giteaEnable / giteaDisable / giteaStatusOf", () => {
         hostname: "git.example.com",
         adminEmail: "admin@example.com",
         disableRegistration: false,
+        skipOtherAppsCheck: true,
         services: { remote },
       }),
     ).rejects.toThrow(/gitea-registration-disabled/);
@@ -140,6 +146,7 @@ describe("giteaEnable / giteaDisable / giteaStatusOf", () => {
       adminEmail: "admin@example.com",
       database: "postgres",
       webhookPath: "/api/webhooks/gitea",
+      skipOtherAppsCheck: true,
       services: { remote },
     });
 
@@ -156,6 +163,11 @@ describe("giteaEnable / giteaDisable / giteaStatusOf", () => {
       throw new Error("expected saved Gitea secrets with postgresPassword");
     }
     expect(savedSecrets.postgresPassword).toMatch(/^[0-9a-f]{64}$/);
+    expect(savedSecrets.botPassword).toBeDefined();
+    expect(savedSecrets.appApiToken).toBe("syntheticbottoken0123456789abcdef");
+    expect(deps.redactor.redact("syntheticbottoken0123456789abcdef")).not.toContain(
+      "syntheticbottoken0123456789abcdef",
+    );
 
     // Verify zero secrets leaked into opcrew/plan.yaml, status text, or remote commands
     const planText = await readFile(deps.paths.files.plan, "utf8");
@@ -167,9 +179,11 @@ describe("giteaEnable / giteaDisable / giteaStatusOf", () => {
 
     for (const secretValue of [
       savedSecrets.adminPassword,
+      savedSecrets.botPassword ?? "",
       savedSecrets.secretKey,
       savedSecrets.internalToken,
       savedSecrets.webhookSecret,
+      savedSecrets.appApiToken ?? "",
       savedSecrets.postgresPassword,
     ]) {
       expect(planText).not.toContain(secretValue);
@@ -193,6 +207,7 @@ describe("giteaEnable / giteaDisable / giteaStatusOf", () => {
       giteaEnable(deps, plan, {
         hostname: "git.example.com",
         adminEmail: "admin@example.com",
+        skipOtherAppsCheck: true,
         services: { remote },
       }),
     ).rejects.toThrow(/damaged/);
@@ -204,25 +219,106 @@ describe("giteaEnable / giteaDisable / giteaStatusOf", () => {
     await giteaEnable(deps, plan, {
       hostname: "git.example.com",
       adminEmail: "admin@example.com",
+      skipOtherAppsCheck: true,
       services: { remote },
     });
     const enabledPlan = await readArtifact("plan", deps.paths.files.plan);
 
     // Default keepData: true -> no allowDestroy, secrets kept
-    const kept = await giteaDisable(deps, enabledPlan, { services: { remote } });
+    const kept = await giteaDisable(deps, enabledPlan, {
+      skipOtherAppsCheck: true,
+      services: { remote },
+    });
     expect(kept.hostApplied).toBe(true);
     expect(kept.status.enabled).toBe(false);
     expect(approvals.at(-1)?.allowDestroy).toBeUndefined();
     expect(await readGiteaSecrets(deps)).toBeDefined();
 
-    // Explicit keepData: false -> allowDestroy + confirmPhrase required, secrets removed
+    // Explicit keepData: false -> allowDestroy + resource-name confirmPhrase required, secrets removed
     const destroyed = await giteaDisable(deps, enabledPlan, {
       keepData: false,
+      skipOtherAppsCheck: true,
       services: { remote },
     });
     expect(destroyed.hostApplied).toBe(true);
     expect(approvals.at(-1)?.allowDestroy).toBe(true);
-    expect(approvals.at(-1)?.confirmPhrase).toBe(plan.app.name);
+    expect(approvals.at(-1)?.confirmPhrase).toBe("git.example.com");
     expect(await readGiteaSecrets(deps)).toBeUndefined();
+  });
+
+  it("refuses silent database engine switch in place and preserves existing version on re-enable", async () => {
+    const { deps, remote } = await makeWorkspace(true);
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    await giteaEnable(deps, plan, {
+      hostname: "git.example.com",
+      adminEmail: "admin@example.com",
+      database: "sqlite",
+      skipOtherAppsCheck: true,
+      services: { remote },
+    });
+    const enabledPlan = await readArtifact("plan", deps.paths.files.plan);
+
+    await expect(
+      giteaEnable(deps, enabledPlan, {
+        database: "postgres",
+        skipOtherAppsCheck: true,
+        services: { remote },
+      }),
+    ).rejects.toThrow(/switching to `postgres` in place/);
+
+    const pinnedOld = {
+      ...enabledPlan,
+      gitea: enabledPlan.gitea ? { ...enabledPlan.gitea, version: "27.1.0" } : undefined,
+    };
+    expect(giteaSettings(pinnedOld, {}).version).toBe("27.1.0");
+    await expect(
+      giteaEnable(deps, pinnedOld, {
+        planOnly: true,
+        skipOtherAppsCheck: true,
+        services: { remote },
+      }),
+    ).rejects.toThrow(/gitea-image-pinned/);
+  });
+
+  it("enforces ADR 0035 other-apps check on cloud servers unless skipped", async () => {
+    const { deps, approvals, remote, calls } = await makeWorkspace(true);
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    await expect(
+      giteaEnable(deps, plan, {
+        hostname: "git.example.com",
+        adminEmail: "admin@example.com",
+        services: { remote },
+      }),
+    ).rejects.toThrow(/other apps/);
+    expect(approvals).toHaveLength(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses a second app sharing a first app's server before touching anything (ADR 0035)", async () => {
+    const { deps, approvals, remote, calls } = await makeWorkspace(true);
+    const base = await readArtifact("plan", deps.paths.files.plan);
+    const sharedPlan = {
+      ...base,
+      target: {
+        provider: "own" as const,
+        mode: "vps-compose" as const,
+        arch: "amd64" as const,
+        access: "public" as const,
+        edge: "caddy" as const,
+        shares: { app: "first-app", provider: "hetzner" as const },
+      },
+    };
+    await expect(
+      giteaEnable(deps, sharedPlan, {
+        hostname: "git.example.com",
+        adminEmail: "admin@example.com",
+        services: { remote },
+      }),
+    ).rejects.toThrow(/first-app/);
+    await expect(
+      giteaDisable(deps, sharedPlan, { keepData: false, services: { remote } }),
+    ).rejects.toThrow(/first-app/);
+    expect(approvals).toHaveLength(0);
+    expect(calls).toHaveLength(0);
   });
 });

@@ -14,6 +14,7 @@ export {
 export {
   GITEA_APP_ENV_VARS,
   GITEA_APP_TOKEN_NAME,
+  GITEA_BOT_USER,
   GITEA_DEFAULT_WEBHOOK_EVENTS,
   type GiteaAppConnectionSpec,
   giteaAppIntegration,
